@@ -2,7 +2,7 @@
 //! and persisting the selected provider.
 
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::ai::{AiState, ChatMessage, Provider, ProviderAvailability, RequestParams, SageEvent};
 use crate::state::AppState;
@@ -16,28 +16,64 @@ pub(crate) fn available_providers(ai: State<'_, AiState>) -> ProviderAvailabilit
 
 /// Start a streaming chat request. Tokens arrive on `channel`; issuing a newer
 /// request cancels this one.
-#[tauri::command]
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
-pub(crate) fn ask_sage(
-    app: AppHandle,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AskInput {
     request_id: u64,
     conversation_id: u64,
     provider: Provider,
     messages: Vec<ChatMessage>,
-    attach_screenshot: bool,
+    hwnd: i64,
+    pid: u32,
+    game_title: String,
+    capture_id: Option<u64>,
+    hint_only: bool,
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+pub(crate) fn ask_sage(
+    app: AppHandle,
+    request: AskInput,
     channel: Channel<SageEvent>,
-) {
+) -> Result<(), String> {
+    if request.messages.is_empty()
+        || request.messages.len() > 25
+        || request
+            .messages
+            .iter()
+            .any(|m| !matches!(m.role.as_str(), "user" | "assistant"))
+        || request
+            .messages
+            .iter()
+            .map(|m| m.content.len())
+            .sum::<usize>()
+            > 100_000
+    {
+        return Err("The conversation is too long. Start a new chat.".to_owned());
+    }
+    let mut game = crate::capture::target(&app, request.hwnd, request.pid)?;
+    let image = request
+        .capture_id
+        .map(|id| app.state::<crate::capture::CaptureState>().image(id, &game))
+        .transpose()?;
+    if !request.game_title.trim().is_empty() {
+        game.title = request.game_title.trim().chars().take(200).collect();
+    }
     crate::ai::spawn_request(
         &app,
         RequestParams {
-            request_id,
-            conversation_id,
-            provider,
-            messages,
-            attach_screenshot,
+            request_id: request.request_id,
+            conversation_id: request.conversation_id,
+            provider: request.provider,
+            messages: request.messages,
+            game,
+            image,
+            hint_only: request.hint_only,
         },
         channel,
     );
+    Ok(())
 }
 
 /// Cancel the in-flight request if it matches `request_id` (Stop button).

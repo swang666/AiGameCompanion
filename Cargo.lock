@@ -2203,6 +2203,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "toml 1.1.6+spec-1.1.0",

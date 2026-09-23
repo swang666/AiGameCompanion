@@ -91,4 +91,11 @@ export default defineConfig([
       globals: { ...globals.node },
     },
   },
+  {
+    // The UI harness creates a fake Tauri bridge at runtime; its callbacks have
+    // no stable compile-time types to resolve through the TypeScript project.
+    files: ['overlay.spec.js'],
+    extends: [ts.configs.disableTypeChecked],
+    languageOptions: { parserOptions: { projectService: false } },
+  },
 ]);

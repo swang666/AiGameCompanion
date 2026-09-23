@@ -1,1280 +1,883 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import { invoke, Channel } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import { hashHue } from '../utils/accent';
-  import { PROVIDERS, type Provider } from '../stores/companion.svelte';
+  import Answer from './Answer.svelte';
+  import { VoiceRecorder } from '../utils/audio';
+  import {
+    acceptsEvent,
+    gameKey,
+    history,
+    type ChatMessage,
+    type GameTarget,
+  } from '../utils/research';
+  import type { Provider } from '../stores/companion.svelte';
 
-  type GameInfo = {
-    hwnd: number;
-    pid: number;
-    exe: string;
-    title: string;
-    accent?: string;
-  } | null;
   interface Availability {
     gemini: boolean;
     claude: boolean;
     openai: boolean;
+    openai_images: boolean;
+  }
+  interface Preview {
+    id: number;
+    dataUrl: string;
+    capturedAt: string;
   }
   interface SageEvent {
-    kind: 'chunk' | 'done' | 'error';
+    kind: 'chunk' | 'status' | 'done' | 'error';
     requestId: number;
     conversationId: number;
     text?: string;
     message?: string;
   }
-  interface Msg {
-    role: 'user' | 'assistant';
-    content: string;
-    model?: string;
-    screenshot?: boolean;
-    streaming?: boolean;
+  interface Session {
+    title: string;
+    messages: ChatMessage[];
+    draft: string;
   }
-
-  const PROVIDER_ORDER: Provider[] = ['gemini', 'claude', 'openai'];
-  const SUGGESTIONS = ['Where do I go next?', "What's this enemy weak to?", 'Explain this screen'];
-
-  let game = $state<GameInfo>(null);
-  let availability = $state<Availability>({ gemini: false, claude: false, openai: false });
-  let provider = $state<Provider>('gemini');
-  let savedProvider: Provider | null = null;
-  let dropdownOpen = $state(false);
-  let tab = $state<'chat' | 'translate'>('chat');
-  let attach = $state(false);
-  let prompt = $state('');
-  let asking = $state(false);
-  let messages = $state<Msg[]>([]);
-
-  let inputEl = $state<HTMLInputElement | null>(null);
-  let msglistEl = $state<HTMLDivElement | null>(null);
-
-  let translateText = $state('');
-  let translateBusy = $state(false);
-  let translateError = $state('');
-
-  const QUICK_ASK = 'What should I do next here?';
-
-  // Plain counters (not reactive): real request ids start at 1, so 0 = "none".
-  let nextRequestId = 0;
-  let conversationId = 1;
-  let activeRequestId = 0;
-  let streamIndex = -1;
-  let savedProviderLoaded = false;
-
-  const available = $derived(PROVIDER_ORDER.filter((p) => availability[p]));
-  const meta = $derived(PROVIDERS[provider]);
-  const accent = $derived(
-    game ? (game.accent ?? hashHue(game.exe || game.title || 'sage')) : '#e0a23c',
-  );
-  const canAttach = $derived(Boolean(game) && provider !== 'openai');
-  const canSend = $derived(Boolean(game) && available.length > 0);
-  const captureHint = $derived.by(() => {
-    if (provider === 'openai') return 'screenshots unsupported on OpenAI';
-    if (attach && canAttach) return 'screenshot attached · WGC';
-    return 'screenshot attaches via WGC';
+  const providers: { id: Provider; name: string }[] = [
+    { id: 'claude', name: 'Claude' },
+    { id: 'openai', name: 'Codex' },
+    { id: 'gemini', name: 'Gemini' },
+  ];
+  const sessions = new SvelteMap<string, Session>();
+  const recorder = new VoiceRecorder();
+  let game = $state<GameTarget | null>(null);
+  let session = $state<Session>({ title: '', messages: [], draft: '' });
+  let provider = $state<Provider>('claude');
+  let availability = $state<Availability>({
+    gemini: false,
+    claude: false,
+    openai: false,
+    openai_images: false,
   });
+  let preview = $state<Preview | null>(null);
+  let attach = $state(true);
+  let hintOnly = $state(true);
+  let capturing = $state(false);
+  let captureError = $state('');
+  let error = $state('');
+  let asking = $state(false);
+  let voicePhase = $state<'idle' | 'starting' | 'recording' | 'transcribing'>('idle');
+  let voiceReady = $state(false);
+  let voiceInfo = $state('Checking local voice…');
+  let microphones = $state<MediaDeviceInfo[]>([]);
+  let microphone = $state('');
+  let input = $state<HTMLTextAreaElement | null>(null);
+  let messageList = $state<HTMLElement | null>(null);
+  let sequence = 0;
+  let activeRequest = 0;
+  let conversation = 1;
+  let captureSequence = 0;
+  let voiceSequence = 0;
+  let activeVoice = 0;
+  let capturePending: Promise<void> | null = null;
+  const canSend = $derived(
+    Boolean(game) &&
+      availability[provider] &&
+      !asking &&
+      !capturing &&
+      voicePhase === 'idle' &&
+      (!attach || Boolean(preview)),
+  );
+  const imageSupported = $derived(provider !== 'openai' || availability.openai_images);
 
-  // Follow a streaming answer, but only while the user is already at the bottom
-  // -- scrolling up to re-read history must not be yanked back down. The check
-  // has to happen before the DOM grows, hence $effect.pre.
   $effect.pre(() => {
-    // Re-runs on every appended chunk and on every new message.
-    const growth = messages.length + (messages.at(-1)?.content.length ?? 0);
-    const el = msglistEl;
-    if (!el || growth === 0) return;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight > 50) return;
+    const length = session.messages.length + (session.messages.at(-1)?.content.length ?? 0);
+    const el = messageList;
+    if (!el || !length || el.scrollHeight - el.scrollTop - el.clientHeight > 70) return;
     void tick().then(() => {
       el.scrollTop = el.scrollHeight;
     });
   });
 
-  // Re-query availability (CLI detection can lag startup); restore the saved
-  // provider once it's known-available, else fall back to the first available.
-  async function refreshProviders() {
+  async function refresh() {
     try {
       availability = await invoke<Availability>('available_providers');
-    } catch {
-      return;
+      if (!availability[provider])
+        provider = providers.find((p) => availability[p.id])?.id ?? 'claude';
+      if (provider === 'openai' && !availability.openai_images && attach) toggleCapture();
+      const status = await invoke<{ ready: boolean; message: string }>('voice_status');
+      voiceReady = status.ready;
+      voiceInfo = status.message;
+    } catch (e) {
+      error = String(e);
     }
-    const fallback = available[0];
-    if (savedProvider && availability[savedProvider]) provider = savedProvider;
-    else if (!availability[provider] && fallback) provider = fallback;
   }
-
-  async function selectProvider(p: Provider) {
-    provider = p;
-    savedProvider = p;
-    dropdownOpen = false;
-    if (provider === 'openai') attach = false;
+  async function selectProvider(value: Provider) {
+    provider = value;
+    if (value === 'openai' && !availability.openai_images && attach) toggleCapture();
     try {
-      await invoke('set_active_provider', { provider: p });
-    } catch {
-      /* selection still applies for this session */
+      await invoke('set_active_provider', { provider });
+    } catch (e) {
+      error = String(e);
     }
   }
-
-  async function newChat() {
-    const inflight = asking ? activeRequestId : 0;
-    // Reset synchronously first so a Send fired during the cancel IPC gap cannot
-    // be clobbered by a post-await state reset.
-    activeRequestId = 0;
+  function stop() {
+    const id = activeRequest;
+    activeRequest = 0;
     asking = false;
-    conversationId += 1;
-    messages = [];
-    prompt = '';
-    if (inflight) {
-      try {
-        await invoke('cancel_sage', { requestId: inflight });
-      } catch {
-        /* best effort */
+    const last = session.messages.at(-1);
+    if (last && !last.complete) last.status = 'Stopped';
+    if (id)
+      void invoke('cancel_sage', { requestId: id }).catch(() => {
+        /* cancellation is best effort */
+      });
+  }
+  function cancelVoice() {
+    const id = activeVoice;
+    activeVoice = 0;
+    voiceSequence++;
+    voicePhase = 'idle';
+    recorder.cancel();
+    if (id)
+      void invoke('cancel_voice', { requestId: id }).catch(() => {
+        /* cancellation is best effort */
+      });
+  }
+  function newChat() {
+    stop();
+    cancelVoice();
+    conversation++;
+    error = '';
+    session.messages = [];
+    session.draft = '';
+  }
+  function useGame(next: GameTarget | null) {
+    if (gameKey(next) !== gameKey(game) || next?.pid !== game?.pid) {
+      stop();
+      cancelVoice();
+      conversation++;
+      error = '';
+      if (gameKey(game)) sessions.set(gameKey(game), $state.snapshot(session));
+      session = sessions.get(gameKey(next)) ?? {
+        title: next?.title ?? '',
+        messages: [],
+        draft: '',
+      };
+      if (sessions.size > 8) {
+        const oldest = sessions.keys().next().value;
+        if (oldest) sessions.delete(oldest);
       }
     }
+    game = next;
+    preview = null;
+    captureError = '';
+    captureSequence++;
+    capturing = false;
+    capturePending = null;
+    if (attach && game) void retake();
+    void refresh();
+    void tick().then(() => input?.focus());
   }
-
-  function onWindowPointerDown(event: PointerEvent) {
-    if (!dropdownOpen) return;
-    const target = event.target as HTMLElement;
-    if (!target.closest('.provider-pill') && !target.closest('.dropdown')) {
-      dropdownOpen = false;
+  function retake(): Promise<void> {
+    const target = game;
+    if (!target) return Promise.resolve();
+    const seq = ++captureSequence;
+    preview = null;
+    captureError = '';
+    capturing = true;
+    const pending = (async () => {
+      try {
+        const result = await invoke<Preview>('capture_game', {
+          hwnd: target.hwnd,
+          pid: target.pid,
+        });
+        if (seq === captureSequence) preview = result;
+      } catch (e) {
+        if (seq === captureSequence) captureError = String(e);
+      } finally {
+        if (seq === captureSequence) {
+          capturing = false;
+          capturePending = null;
+        }
+      }
+    })();
+    capturePending = pending;
+    return pending;
+  }
+  function toggleCapture() {
+    attach = !attach;
+    if (attach) void retake();
+    else {
+      captureSequence++;
+      preview = null;
+      capturing = false;
+      captureError = '';
+      capturePending = null;
     }
   }
-
-  async function send(text?: string) {
-    const question = (text ?? prompt).trim();
-    if (!question || asking || !canSend) return;
-
-    const id = (nextRequestId += 1);
-    const convo = conversationId;
-    activeRequestId = id;
-    const withShot = attach && canAttach;
-
-    // History for the backend: prior turns + this question.
-    const outgoing = messages.map((m) => ({ role: m.role, content: m.content }));
-    outgoing.push({ role: 'user', content: question });
-
-    messages = [
-      ...messages,
-      { role: 'user', content: question, screenshot: withShot },
-      { role: 'assistant', content: '', model: meta.model, streaming: true },
-    ];
-    const idx = messages.length - 1;
-    streamIndex = idx;
-    prompt = '';
+  async function send(question = session.draft) {
+    const text = question.trim();
+    const target = game;
+    if (!text || text.length > 4000 || !canSend || !target) return;
+    const id = ++sequence;
+    const convo = conversation;
+    const shot = attach ? preview : null;
+    const outgoing = [...history(session.messages), { role: 'user', content: text }];
+    activeRequest = id;
     asking = true;
-
+    error = '';
+    session.messages = [
+      ...session.messages.slice(-38),
+      { role: 'user', content: text, screenshot: shot?.capturedAt },
+      { role: 'assistant', content: '', status: 'Connecting…' },
+    ];
+    const index = session.messages.length - 1;
+    session.draft = '';
     const channel = new Channel<SageEvent>();
     channel.onmessage = (event) => {
-      // Ignore output from a superseded request or cleared conversation.
-      if (event.requestId !== activeRequestId || event.conversationId !== convo) return;
-      const bubble = messages[idx];
-      if (!bubble) return;
-      if (event.kind === 'chunk') {
-        bubble.content += event.text ?? '';
-      } else if (event.kind === 'done') {
-        bubble.streaming = false;
+      if (!acceptsEvent(activeRequest, conversation, event)) return;
+      const message = session.messages[index];
+      if (!message) return;
+      if (event.kind === 'chunk') message.content += event.text ?? '';
+      else if (event.kind === 'status') message.status = event.text ?? '';
+      else {
         asking = false;
-      } else {
-        const msg = event.message ?? 'Unknown error';
-        bubble.content = bubble.content ? `${bubble.content}\n\n[error] ${msg}` : `[error] ${msg}`;
-        bubble.streaming = false;
-        asking = false;
+        activeRequest = 0;
+        if (event.kind === 'done') {
+          message.complete = true;
+          message.status =
+            message.status === 'Web results received' ? 'Web research complete' : 'Answer complete';
+        } else {
+          message.status = 'Failed';
+          error = event.message ?? 'Request failed';
+          session.draft = text;
+        }
       }
     };
-
     try {
       await invoke('ask_sage', {
-        requestId: id,
-        conversationId: convo,
-        provider,
-        messages: outgoing,
-        attachScreenshot: withShot,
+        request: {
+          requestId: id,
+          conversationId: convo,
+          provider,
+          messages: outgoing,
+          hwnd: target.hwnd,
+          pid: target.pid,
+          gameTitle: session.title,
+          captureId: shot?.id ?? null,
+          hintOnly,
+        },
         channel,
       });
-    } catch (err) {
-      // Same guard as the channel handler: a rejection that lands after New chat
-      // or a newer Send must not write into the current conversation's bubble.
-      if (id !== activeRequestId || convo !== conversationId) return;
-      const bubble = messages[idx];
-      if (bubble) {
-        bubble.content = `[error] ${String(err)}`;
-        bubble.streaming = false;
-      }
+    } catch (e) {
+      if (id !== activeRequest || convo !== conversation) return;
+      const message = session.messages[index];
+      if (message) message.status = 'Failed';
+      session.draft = text;
       asking = false;
+      activeRequest = 0;
+      error = String(e);
     }
   }
-
-  async function stop() {
-    if (!asking) return;
-    const id = activeRequestId;
-    activeRequestId = 0;
-    asking = false;
-    const streamed = messages[streamIndex];
-    if (streamed) streamed.streaming = false;
-    try {
-      await invoke('cancel_sage', { requestId: id });
-    } catch {
-      /* best effort */
-    }
-  }
-
-  function onKeydown(event: KeyboardEvent) {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      void send();
-    }
-  }
-
-  async function hideOverlay() {
-    // Go through the backend: it hands focus back to the game, which a bare
-    // window.hide() skips.
-    try {
-      await invoke('hide_overlay');
-    } catch {
-      /* command may not exist in preview */
-    }
-  }
-
-  async function runTranslate() {
-    if (translateBusy) return;
-    if (!availability.gemini) {
-      translateText = '';
-      translateError = 'Translation requires a Gemini API key.';
+  async function startVoice() {
+    if (voicePhase !== 'idle' || asking || !game) return;
+    const seq = ++voiceSequence;
+    voicePhase = 'starting';
+    error = '';
+    await refresh();
+    if (seq !== voiceSequence) return;
+    if (!voiceReady) {
+      error = voiceInfo;
+      voicePhase = 'idle';
       return;
     }
-    translateBusy = true;
-    translateError = '';
+    if (attach) void retake();
     try {
-      const res = await invoke<{ text: string }>('translate_screen');
-      translateText = res.text;
-    } catch (err) {
-      translateError = String(err);
-      translateText = '';
+      await recorder.start(microphone, () => {
+        void finishVoice();
+      });
+      if (seq !== voiceSequence) return;
+      voicePhase = 'recording';
+      microphones = (await navigator.mediaDevices.enumerateDevices()).filter(
+        (d) => d.kind === 'audioinput',
+      );
+    } catch (e) {
+      if (seq !== voiceSequence) return;
+      recorder.cancel();
+      voicePhase = 'idle';
+      error = `Microphone unavailable: ${String(e)}`;
+    }
+  }
+  async function finishVoice() {
+    if (voicePhase === 'starting') {
+      cancelVoice();
+      return;
+    }
+    if (voicePhase !== 'recording') return;
+    const seq = voiceSequence;
+    const id = ++sequence;
+    activeVoice = id;
+    voicePhase = 'transcribing';
+    try {
+      const wav = await recorder.finish();
+      if (seq !== voiceSequence) return;
+      const text = await invoke<string>('transcribe_voice', { requestId: id, wav });
+      if (seq !== voiceSequence) return;
+      session.draft = [session.draft, text].filter(Boolean).join(' ').slice(0, 4000);
+      void tick().then(() => input?.focus());
+    } catch (e) {
+      if (seq === voiceSequence) error = String(e);
     } finally {
-      translateBusy = false;
+      if (seq === voiceSequence) {
+        activeVoice = 0;
+        voicePhase = 'idle';
+      }
     }
   }
-
-  async function runQuickAsk() {
-    tab = 'chat';
-    if (asking) await stop();
-    if (!canSend) return;
-    // Attach a frame for this one-shot without leaving the toggle on.
-    const prev = attach;
-    attach = canAttach;
-    const pending = send(QUICK_ASK);
-    attach = prev;
-    await pending;
+  function toggleVoice() {
+    if (voicePhase === 'idle') void startVoice();
+    else if (voicePhase === 'recording' || voicePhase === 'starting') void finishVoice();
+    else cancelVoice();
   }
-
-  async function copyTranslation() {
-    if (!translateText) return;
+  async function hide() {
+    cancelVoice();
     try {
-      await navigator.clipboard.writeText(translateText);
-    } catch {
-      /* clipboard may be unavailable */
+      await invoke('hide_overlay');
+    } catch (e) {
+      error = String(e);
     }
   }
-
+  function keydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      void hide();
+    }
+  }
+  async function quickAsk(text: string) {
+    const convo = conversation;
+    if (capturePending) await capturePending;
+    if (convo === conversation) await send(text);
+  }
   onMount(() => {
-    // Only the overlay window mounts this; keep its surface transparent.
     document.documentElement.style.background = 'transparent';
     document.body.style.background = 'transparent';
-
     void (async () => {
       try {
-        const settings = await invoke<{ active_provider?: string }>('get_settings');
-        savedProvider = (settings.active_provider as Provider | undefined) ?? null;
+        const settings = await invoke<{ active_provider: Provider }>('get_settings');
+        if (providers.some((p) => p.id === settings.active_provider))
+          provider = settings.active_provider;
       } catch {
-        /* defaults apply */
+        /* first launch */
       }
-      savedProviderLoaded = true;
-      await refreshProviders();
+      await refresh();
     })();
-
     const listeners = [
-      listen<GameInfo>('overlay-status', (event) => {
-        game = event.payload;
-        // The overlay just became visible: CLI detection has had time to finish.
-        if (savedProviderLoaded) void refreshProviders();
-        // The window is shown and hidden, never remounted, so the input has to
-        // be focused on every show -- the Rust side only focuses the window.
-        // Wait for the DOM: `game` above flips canSend, and a still-disabled
-        // input silently refuses focus.
-        void tick().then(() => inputEl?.focus());
+      listen<GameTarget | null>('overlay-status', (event) => {
+        useGame(event.payload);
+      }),
+      listen('overlay-hidden', cancelVoice),
+      listen('voice-request', toggleVoice),
+      listen('quick-ask', () => {
+        void quickAsk('Give me a small hint about what to do next here.');
       }),
       listen('translate-request', () => {
-        tab = 'translate';
-        void runTranslate();
-      }),
-      listen('quick-ask', () => {
-        void runQuickAsk();
+        void quickAsk('Translate the text on this screen into English.');
       }),
     ];
     return () => {
+      stop();
+      cancelVoice();
       for (const listener of listeners)
-        void listener.then((unlisten) => {
-          unlisten();
+        void listener.then((off) => {
+          off();
         });
     };
   });
 </script>
 
-<svelte:window onpointerdown={onWindowPointerDown} />
-
-<div style="--accent: {accent};" class="overlay-root">
-  <div class="panel">
-    <!-- titlebar -->
-    <div class="titlebar" data-tauri-drag-region>
-      <span class="logo"></span>
-      <span class="wordmark">SAGE</span>
-      <span class="drag-chip">drag</span>
-      <div class="title-actions">
-        <button
-          class="icon-btn"
-          aria-label="New chat"
-          onclick={newChat}
-          title="New chat"
-          type="button"
-        >
-          <svg
-            fill="none"
-            height="15"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="1.7"
-            viewBox="0 0 24 24"
-            width="15"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg
-          >
-        </button>
-        <button
-          class="icon-btn"
-          aria-label="Hide"
-          onclick={hideOverlay}
-          title="Hide (Ctrl+Shift+G)"
-          type="button"
-        >
-          <svg
-            fill="none"
-            height="15"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="1.9"
-            viewBox="0 0 24 24"
-            width="15"><path d="M6 9l6 6 6-6" /></svg
-          >
-        </button>
-      </div>
+<svelte:window onkeydown={keydown} />
+<main class="overlay">
+  <header data-tauri-drag-region>
+    <div class="brand" data-tauri-drag-region>
+      <span class="spark">✦</span> SAGE <span class="subtitle">game companion</span>
     </div>
-
-    <!-- detected game -->
-    <div class="gamebar">
-      <span class="game-tile" class:muted={!game}></span>
-      <div class="game-meta">
-        {#if game}
-          <span class="game-title">{game.title || game.exe}</span>
-          <span class="game-exe">{game.exe}</span>
-        {:else}
-          <span class="game-title dim">No game detected</span>
-          <span class="game-exe">bring a game to the foreground</span>
-        {/if}
+    <button
+      class="icon"
+      aria-label="New chat"
+      onclick={newChat}
+      title="New conversation for this game"
+      type="button">＋</button
+    >
+    <button
+      class="icon"
+      aria-label="Close overlay"
+      onclick={hide}
+      title="Return to game · Esc"
+      type="button">×</button
+    >
+  </header>
+  <section class="context">
+    <label for="game-title">PLAYING <span>edit if needed</span></label>
+    <input
+      id="game-title"
+      class="game-title"
+      disabled={!game || asking}
+      maxlength="200"
+      placeholder="Open with Ctrl+Shift+G over your game"
+      bind:value={session.title}
+    />
+    <div class="options">
+      <div class="providers" aria-label="Assistant">
+        {#each providers as item (item.id)}<button
+            class:chosen={provider === item.id}
+            disabled={!availability[item.id] || asking}
+            onclick={() => selectProvider(item.id)}
+            type="button">{item.name}</button
+          >{/each}
       </div>
-      {#if game}
-        <span class="linked-pill"><span class="d"></span>linked</span>
-      {/if}
+      <label class="hint"><input type="checkbox" bind:checked={hintOnly} />Hints first</label>
     </div>
-
-    <!-- tabs + provider -->
-    <div class="tabrow">
-      <div class="tabs">
-        <button
-          class="tab"
-          class:active={tab === 'chat'}
-          onclick={() => (tab = 'chat')}
-          type="button"
-        >
-          <svg
-            fill="none"
-            height="14"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="1.7"
-            viewBox="0 0 24 24"
-            width="14"
-            ><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg
-          >
-          Chat
-        </button>
-        <button
-          class="tab"
-          class:active={tab === 'translate'}
-          onclick={() => (tab = 'translate')}
-          type="button"
-        >
-          <svg
-            fill="none"
-            height="14"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="1.7"
-            viewBox="0 0 24 24"
-            width="14"
-            ><circle cx="12" cy="12" r="9" /><path
-              d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"
-            /></svg
-          >
-          Translate
-        </button>
-      </div>
-      <button
-        class="provider-pill"
-        disabled={available.length === 0 || asking}
-        onclick={() => (dropdownOpen = !dropdownOpen)}
-        type="button"
+    <div class="capture-bar">
+      <label
+        ><input
+          checked={attach}
+          disabled={!game || !imageSupported}
+          onchange={toggleCapture}
+          type="checkbox"
+        />Screenshot</label
       >
-        <span style="background: {meta.dot}; box-shadow: 0 0 6px {meta.dot};" class="prov-dot"
-        ></span>
-        {available.length === 0 ? 'No providers' : meta.label}
-        <span class="caret">{dropdownOpen ? '▴' : '▾'}</span>
-      </button>
-
-      {#if dropdownOpen && available.length > 0}
-        <div class="dropdown">
-          <div class="dropdown-head">Available providers</div>
-          {#each available as p (p)}
-            <button class="prov-row" onclick={() => selectProvider(p)} type="button">
-              <span style="background: {PROVIDERS[p].dot};" class="pdot"></span>
-              <span class="pmeta">
-                <span class="pname">{PROVIDERS[p].label}</span>
-                <span class="pmodel">{PROVIDERS[p].model}</span>
-              </span>
-              {#if p === provider}
-                <span class="pcheck">
-                  <svg
-                    fill="none"
-                    height="15"
-                    stroke="currentColor"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2.2"
-                    viewBox="0 0 24 24"
-                    width="15"><path d="M5 13l4 4L19 7" /></svg
-                  >
-                </span>
-              {/if}
-            </button>
-          {/each}
-        </div>
-      {/if}
+      {#if attach}<button disabled={capturing || !game} onclick={retake} type="button"
+          >{capturing ? 'Capturing…' : 'Retake'}</button
+        >{/if}
+      <span
+        >{!imageSupported
+          ? 'Native Codex needed for images'
+          : attach
+            ? (preview?.capturedAt ?? 'No frame yet')
+            : 'Text only'}</span
+      >
     </div>
-
-    {#if tab === 'chat'}
-      <!-- chat body -->
-      <div class="body">
-        <div bind:this={msglistEl} class="msglist">
-          {#if available.length === 0}
-            <div class="msg sage">
-              <span class="avatar"></span>
-              <div class="bubble">
-                No AI providers are available. Add a Gemini key in config.toml, or install the
-                Claude / Codex CLI.
-              </div>
-            </div>
-          {:else if messages.length === 0}
-            <div class="msg sage">
-              <span class="avatar"></span>
-              <div class="bubble">
-                {#if game}
-                  Linked to {game.title || game.exe}. I can see your screen — ask me anything, or
-                  tap a prompt below.
-                {:else}
-                  Bring a game to the foreground and I'll link to it. Then ask me anything about
-                  what's on screen.
-                {/if}
-              </div>
-            </div>
-            {#if game}
-              <div class="chips">
-                {#each SUGGESTIONS as s (s)}
-                  <button class="chip" onclick={() => send(s)} type="button">{s}</button>
-                {/each}
-              </div>
-            {/if}
-          {:else}
-            {#each messages as m, i (i)}
-              {#if m.role === 'user'}
-                <div class="msg user">
-                  {#if m.screenshot}
-                    <span class="frame-chip"><span class="thumb"></span>frame · WGC</span>
-                  {/if}
-                  <div class="bubble">{m.content}</div>
-                </div>
-              {:else}
-                <div class="msg sage">
-                  <span class="avatar"></span>
-                  <div>
-                    <div class="bubble">
-                      {#if m.content}{m.content}{/if}{#if m.streaming && m.content}<span
-                          class="caret-blink"
-                        ></span>{/if}
-                      {#if m.streaming && !m.content}
-                        <span class="thinking"><i></i><i></i><i></i></span>
-                      {/if}
-                    </div>
-                    {#if m.model && (m.content || !m.streaming)}
-                      <div class="meta">{m.model}{m.streaming ? ' · streaming' : ''}</div>
-                    {/if}
-                  </div>
-                </div>
-              {/if}
-            {/each}
-          {/if}
+    {#if attach && preview}<img
+        class="preview"
+        alt="Game frame that will be sent with your question"
+        src={preview.dataUrl}
+      />{/if}
+    {#if attach && captureError}<div class="notice" role="alert">
+        {captureError} Retake, or uncheck Screenshot to send text only.
+      </div>{/if}
+  </section>
+  <section bind:this={messageList} class="messages" aria-label="Conversation" aria-live="polite">
+    {#if session.messages.length === 0}<div class="welcome">
+        <span class="eyebrow">A LITTLE HELP, RIGHT HERE</span>
+        <h1>Stay in the game.</h1>
+        <p>
+          Ask a question by voice or text. Your assistant can use the captured frame and search for
+          an answer.
+        </p>
+        {#if game}<div class="suggestions">
+            {#each ['Where should I go next?', 'How does this work?'] as suggestion (suggestion)}<button
+                disabled={!canSend}
+                onclick={() => send(suggestion)}
+                type="button">{suggestion} ↗</button
+              >{/each}
+          </div>{/if}
+      </div>{/if}
+    {#each session.messages as message, i (i)}<article class:user={message.role === 'user'}>
+        <div class="message-label">
+          {message.role === 'user' ? 'YOU' : 'SAGE'}{#if message.screenshot}<span
+              >frame {message.screenshot}</span
+            >{/if}
         </div>
-
-        <div class="inputbar">
-          <div class="inputrow">
-            <button
-              class="attach-btn"
-              class:off={!(attach && canAttach)}
-              aria-label="Attach screenshot"
-              disabled={!canAttach}
-              onclick={() => (attach = !attach)}
-              title={provider === 'openai'
-                ? 'Screenshots are not supported on OpenAI'
-                : 'Attach a screenshot of the game'}
-              type="button"
-            >
-              <svg
-                fill="none"
-                height="18"
-                stroke="currentColor"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="1.7"
-                viewBox="0 0 24 24"
-                width="18"
-                ><rect height="18" rx="2" width="18" x="3" y="3" /><circle
-                  cx="8.5"
-                  cy="8.5"
-                  r="1.5"
-                /><path d="M21 15l-5-5L5 21" /></svg
-              >
-            </button>
-            <input
-              bind:this={inputEl}
-              class="text-input"
-              disabled={!canSend}
-              onkeydown={onKeydown}
-              placeholder={game ? `Ask Sage about ${game.title || game.exe}…` : 'No game detected'}
-              bind:value={prompt}
-            />
-            {#if asking}
-              <button class="send-btn" aria-label="Stop" onclick={stop} title="Stop" type="button">
-                <svg fill="currentColor" height="13" viewBox="0 0 24 24" width="13"
-                  ><rect height="14" rx="2" width="14" x="5" y="5" /></svg
-                >
-              </button>
-            {:else}
-              <button
-                class="send-btn"
-                aria-label="Send"
-                disabled={!canSend || !prompt.trim()}
-                onclick={() => send()}
-                title="Send"
-                type="button"
-              >
-                <svg fill="currentColor" height="17" viewBox="0 0 24 24" width="17"
-                  ><path d="M3 11l18-8-8 18-2-7-8-3z" /></svg
-                >
-              </button>
-            {/if}
-          </div>
-          <div class="footer">
-            <span>{meta.model} · {asking ? 'streaming' : 'Enter to send'}</span>
-            <span>{captureHint}</span>
-          </div>
-        </div>
-      </div>
-    {:else}
-      <!-- translate -->
-      <div class="body translate">
-        <div class="capture-box">
-          <div class="capture-head">CAPTURED · Windows.Graphics.Capture</div>
-          <div class="capture-frame" class:busy={translateBusy}></div>
-        </div>
-        <div class="lang-row">
-          <span class="lang-chip">Auto-detect</span>
-          <span class="lang-arrow">→</span>
-          <span class="lang-chip accent">English</span>
-        </div>
-        <div class="translate-result">
-          {#if translateBusy}
-            <div class="thinking"><i></i><i></i><i></i></div>
-          {:else if translateError}
-            <div style="color: var(--color-err);" class="te-title">{translateError}</div>
-          {:else if translateText}
-            <div class="translate-text">{translateText}</div>
-          {:else}
-            <div class="translate-empty">
-              {#if !availability.gemini}
-                <div class="te-title">Translation needs a Gemini key.</div>
-                <div class="te-sub">Set api.gemini.api_key in config.toml.</div>
-              {:else}
-                <div class="te-title">No foreign text captured yet.</div>
-                <div class="te-sub">Aim at on-screen text and press Ctrl+Shift+T.</div>
-              {/if}
-            </div>
-          {/if}
-        </div>
-        <div class="translate-actions">
-          <button
-            class="recapture live"
-            disabled={translateBusy || !game || !availability.gemini}
-            onclick={runTranslate}
-            type="button">Re-capture · Ctrl+Shift+T</button
+        <Answer text={message.content} />
+        {#if message.status}<div
+            class="status"
+            class:pulse={asking && i === session.messages.length - 1}
           >
-          <button
-            class="recapture live"
-            disabled={!translateText}
-            onclick={copyTranslation}
-            type="button">Copy</button
-          >
-        </div>
-      </div>
-    {/if}
-  </div>
-</div>
+            {message.status}
+          </div>{/if}
+      </article>{/each}
+  </section>
+  <footer>
+    {#if error}<div class="notice" role="alert">
+        {error}<button aria-label="Dismiss error" onclick={() => (error = '')} type="button"
+          >×</button
+        >
+      </div>{/if}
+    {#if !availability.claude && !availability.openai && !availability.gemini}<div class="notice">
+        No assistant detected. Sign in to Claude Code or Codex, then <button
+          onclick={async () => {
+            await invoke('recheck_clis');
+            await refresh();
+          }}
+          type="button">recheck</button
+        >.
+      </div>{/if}
+    {#if provider === 'gemini'}<div class="voice-info">
+        Gemini uses its knowledge and the image. Choose Claude or Codex for live search.
+      </div>{/if}
+    <textarea
+      bind:this={input}
+      aria-label="Your question"
+      disabled={!game || voicePhase === 'transcribing'}
+      maxlength="4000"
+      onkeydown={(event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          void send();
+        }
+      }}
+      placeholder={game ? 'Ask about the game…' : 'Focus your game, then press Ctrl+Shift+G'}
+      rows="2"
+      bind:value={session.draft}></textarea>
+    <div class="actions">
+      <button
+        class="speak"
+        class:recording={voicePhase === 'recording'}
+        disabled={!game || asking}
+        onclick={toggleVoice}
+        title="Speak · Ctrl+Shift+V"
+        type="button"
+        >{voicePhase === 'idle'
+          ? '● Speak'
+          : voicePhase === 'starting'
+            ? 'Cancel microphone'
+            : voicePhase === 'recording'
+              ? '■ Finish speaking'
+              : 'Cancel transcription'}</button
+      >
+      <span class="voice-info"
+        >{voicePhase === 'recording'
+          ? 'Listening · up to 44s'
+          : voicePhase === 'transcribing'
+            ? 'Transcribing locally…'
+            : 'Review, then send'}</span
+      >
+      {#if asking}<button class="send" onclick={stop} type="button">Stop</button>{:else}<button
+          class="send"
+          disabled={!canSend || !session.draft.trim()}
+          onclick={() => send()}
+          type="button">Send ↑</button
+        >{/if}
+    </div>
+    {#if microphones.length > 1}<select
+        aria-label="Microphone"
+        disabled={voicePhase !== 'idle'}
+        bind:value={microphone}
+        ><option value="">Default microphone</option
+        >{#each microphones as mic (mic.deviceId)}<option value={mic.deviceId}
+            >{mic.label || 'Microphone'}</option
+          >{/each}</select
+      >{/if}
+    <div class="shortcut">
+      <span title={voiceInfo}
+        >{voiceReady ? 'Voice stays on this PC' : 'Win+H also works in the input'}</span
+      ><span>Esc to return</span>
+    </div>
+  </footer>
+</main>
 
 <style>
-  .overlay-root {
-    width: 100vw;
-    height: 100vh;
-    padding: 12px;
-    box-sizing: border-box;
-    display: flex;
-    font-family: var(--font-body);
-    color: var(--color-t-hi);
-    background: transparent;
+  :global(body) {
+    margin: 0;
   }
-  * {
-    box-sizing: border-box;
-  }
-  .panel {
-    flex: 1;
-    min-height: 0;
+  .overlay {
     display: flex;
     flex-direction: column;
-    border-radius: 16px;
-    overflow: hidden;
-    background: rgba(17, 17, 21, 0.9);
-    backdrop-filter: blur(30px);
-    border: 1px solid color-mix(in oklab, var(--accent) 22%, var(--color-line));
-    box-shadow:
-      0 24px 70px -20px rgba(0, 0, 0, 0.7),
-      inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  }
-
-  /* titlebar */
-  .titlebar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 13px 14px;
-    cursor: move;
-    user-select: none;
-    border-bottom: 1px solid var(--color-line-2);
-  }
-  .logo {
-    position: relative;
-    width: 22px;
-    height: 22px;
-    flex-shrink: 0;
-  }
-  .logo::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: 50%;
-    background: radial-gradient(
-      circle at 50% 38%,
-      #fff 0%,
-      color-mix(in oklab, var(--accent) 85%, white) 26%,
-      var(--accent) 60%,
-      color-mix(in oklab, var(--accent) 40%, transparent) 82%,
-      transparent 100%
-    );
-    box-shadow: 0 0 16px -2px var(--accent);
-  }
-  .logo::after {
-    content: '';
-    position: absolute;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.9);
-    top: 20%;
-    right: 22%;
-  }
-  .wordmark {
-    font-family: var(--font-display);
-    font-weight: 700;
-    font-size: 14px;
-    letter-spacing: 0.14em;
-    color: var(--color-t-hi);
-  }
-  .drag-chip {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.08em;
-    color: var(--color-t-lo);
-    padding: 2px 6px;
-    border: 1px solid var(--color-line);
-    border-radius: 6px;
-  }
-  .title-actions {
-    margin-left: auto;
-    display: flex;
-    gap: 6px;
-  }
-  .icon-btn {
-    width: 30px;
-    height: 30px;
-    display: grid;
-    place-items: center;
-    border-radius: 9px;
-    border: 1px solid var(--color-line);
-    background: rgba(255, 255, 255, 0.02);
-    color: var(--color-t-mid);
-    cursor: pointer;
-  }
-  .icon-btn:hover {
-    color: var(--color-t-hi);
-    background: rgba(255, 255, 255, 0.06);
-  }
-
-  /* detected game */
-  .gamebar {
-    display: flex;
-    align-items: center;
-    gap: 11px;
-    padding: 12px 14px;
-  }
-  .game-tile {
-    width: 34px;
-    height: 34px;
-    border-radius: 9px;
-    flex-shrink: 0;
-    background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 55%, #17171b), #101013);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-  }
-  .game-tile.muted {
-    background: var(--color-ink-2);
-  }
-  .game-meta {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .game-title {
-    font-weight: 600;
-    font-size: 13.5px;
-    color: var(--color-t-hi);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .game-title.dim {
-    color: var(--color-t-mid);
-  }
-  .game-exe {
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    color: var(--color-t-lo);
-  }
-  .linked-pill {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--accent);
-    background: color-mix(in oklab, var(--accent) 14%, transparent);
-    border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
-  }
-  .linked-pill .d {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
-    box-shadow: 0 0 6px var(--accent);
-  }
-
-  /* tabs + provider */
-  .tabrow {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 4px 14px 14px;
-  }
-  .tabs {
-    display: flex;
-    gap: 3px;
-    padding: 3px;
-    border-radius: 11px;
-    background: var(--color-ink-2);
-    border: 1px solid var(--color-line-2);
-  }
-  .tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 7px 13px;
-    border-radius: 8px;
-    font-size: 12.5px;
-    font-weight: 500;
-    color: var(--color-t-mid);
-    cursor: pointer;
-    border: 0;
-    background: transparent;
-  }
-  .tab.active {
-    color: var(--accent);
-    background: color-mix(in oklab, var(--accent) 14%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 26%, transparent);
-  }
-  .provider-pill {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border-radius: 10px;
-    background: var(--color-ink-2);
-    border: 1px solid var(--color-line);
-    color: var(--color-t-hi);
-    font-size: 12.5px;
-    font-weight: 500;
-    cursor: pointer;
-  }
-  .provider-pill:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-  .prov-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-  }
-  .caret {
-    color: var(--color-t-mid);
-    font-size: 10px;
-  }
-
-  /* provider dropdown */
-  .dropdown {
-    position: absolute;
-    top: 46px;
-    right: 14px;
-    width: 232px;
-    z-index: 20;
-    background: var(--color-ink-1);
-    border: 1px solid var(--color-line);
-    border-radius: 13px;
-    padding: 6px;
-    box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.75);
-    animation: fade-up 0.14s ease both;
-  }
-  .dropdown-head {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.14em;
-    color: var(--color-t-lo);
-    text-transform: uppercase;
-    padding: 8px 10px 7px;
-  }
-  .prov-row {
-    display: flex;
-    align-items: center;
-    gap: 11px;
+    height: 100dvh;
     width: 100%;
-    padding: 9px 10px;
-    border-radius: 9px;
-    cursor: pointer;
-    border: 0;
-    background: transparent;
-    text-align: left;
+    overflow: hidden;
+    color: #e9e9ed;
+    background: #15171ded;
+    border: 1px solid #ffffff20;
+    border-radius: 14px;
+    font:
+      13px/1.5 'Segoe UI',
+      sans-serif;
+    box-sizing: border-box;
   }
-  .prov-row:hover {
-    background: rgba(255, 255, 255, 0.03);
-  }
-  .pdot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-  .pmeta {
+  header {
     display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .pname {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--color-t-hi);
-  }
-  .pmodel {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--color-t-lo);
-  }
-  .pcheck {
-    margin-left: auto;
-    color: var(--accent);
-    display: grid;
-    place-items: center;
-  }
-
-  /* chat body */
-  .body {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  .msglist {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 6px 14px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-  .msg {
-    display: flex;
-    gap: 10px;
-    max-width: 100%;
-  }
-  .avatar {
-    position: relative;
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    margin-top: 2px;
-    background: radial-gradient(
-      circle at 50% 38%,
-      #fff 0%,
-      color-mix(in oklab, var(--accent) 85%, white) 26%,
-      var(--accent) 60%,
-      transparent 100%
-    );
-    box-shadow: 0 0 14px -3px var(--accent);
-  }
-  .bubble {
-    padding: 11px 14px;
-    border-radius: 13px;
-    font-size: 13.5px;
-    line-height: 1.5;
-    color: var(--color-t-hi);
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  .msg.sage .bubble {
-    background: var(--color-ink-2);
-    border: 1px solid var(--color-line-2);
-    border-top-left-radius: 5px;
-  }
-  .msg.user {
-    flex-direction: column;
-    align-items: flex-end;
-  }
-  .msg.user .bubble {
-    background: color-mix(in oklab, var(--accent) 16%, var(--color-ink-3));
-    border: 1px solid color-mix(in oklab, var(--accent) 24%, transparent);
-    border-top-right-radius: 5px;
-  }
-  .meta {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--color-t-lo);
-    margin-top: 7px;
-    letter-spacing: 0.04em;
-  }
-  .frame-chip {
-    display: inline-flex;
     align-items: center;
-    gap: 7px;
-    padding: 4px 9px 4px 4px;
-    border-radius: 8px;
-    background: var(--color-ink-3);
-    border: 1px solid var(--color-line);
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.04em;
-    color: var(--color-t-mid);
-    margin-bottom: 7px;
-  }
-  .frame-chip .thumb {
-    width: 24px;
-    height: 16px;
-    border-radius: 4px;
-    background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 52%, #17171b), #101013);
-  }
-  .caret-blink {
-    display: inline-block;
-    width: 2px;
-    height: 0.95em;
-    background: var(--accent);
-    margin-left: 2px;
-    vertical-align: text-bottom;
-    animation: blink 1s steps(2) infinite;
-  }
-  @keyframes blink {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0;
-    }
-  }
-  .thinking {
-    display: inline-flex;
-    gap: 4px;
-    align-items: center;
-  }
-  .thinking i {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--color-t-mid);
-    animation: pulse-soft 1.2s ease-in-out infinite;
-  }
-  .thinking i:nth-child(2) {
-    animation-delay: 0.18s;
-  }
-  .thinking i:nth-child(3) {
-    animation-delay: 0.36s;
-  }
-
-  /* suggested prompt chips */
-  .chips {
-    display: flex;
-    flex-wrap: wrap;
     gap: 8px;
-    padding-left: 36px;
+    padding: 12px 14px;
+    border-bottom: 1px solid #ffffff12;
   }
-  .chip {
-    padding: 8px 12px;
-    border-radius: 10px;
+  .brand {
+    flex: 1;
+    font-weight: 700;
+    letter-spacing: 2px;
     font-size: 12px;
-    color: var(--color-t-mid);
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid var(--color-line);
+  }
+  .spark {
+    color: #e4bf7c;
+    margin-right: 7px;
+  }
+  .subtitle {
+    color: #8c929f;
+    font-weight: 400;
+    letter-spacing: 0;
+    margin-left: 5px;
+  }
+  button {
+    border: 1px solid #ffffff1c;
+    background: #ffffff07;
+    color: inherit;
+    border-radius: 7px;
+    padding: 5px 9px;
     cursor: pointer;
+    font: inherit;
   }
-  .chip:hover {
-    color: var(--color-t-hi);
-    border-color: color-mix(in oklab, var(--accent) 34%, transparent);
+  button:hover:not(:disabled) {
+    background: #ffffff16;
   }
-
-  /* input row + footer */
-  .inputbar {
-    padding: 10px 14px 8px;
-    border-top: 1px solid var(--color-line-2);
-  }
-  .inputrow {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-  }
-  .attach-btn {
-    width: 40px;
-    height: 40px;
-    flex-shrink: 0;
-    display: grid;
-    place-items: center;
-    border-radius: 11px;
-    border: 1px solid color-mix(in oklab, var(--accent) 40%, transparent);
-    background: color-mix(in oklab, var(--accent) 12%, transparent);
-    color: var(--accent);
-    cursor: pointer;
-  }
-  .attach-btn.off {
-    border-color: var(--color-line);
-    background: rgba(255, 255, 255, 0.02);
-    color: var(--color-t-mid);
-  }
-  .attach-btn:disabled {
+  button:disabled {
     opacity: 0.4;
     cursor: default;
   }
-  .text-input {
-    flex: 1;
-    min-width: 0;
-    height: 40px;
-    border-radius: 11px;
-    border: 1px solid var(--color-line);
-    background: var(--color-ink-2);
-    color: var(--color-t-hi);
-    font-family: var(--font-body);
-    font-size: 13px;
-    padding: 0 14px;
-    outline: none;
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: 2px solid #e4bf7c;
+    outline-offset: 2px;
   }
-  .text-input::placeholder {
-    color: var(--color-t-lo);
-  }
-  .text-input:disabled {
-    opacity: 0.6;
-  }
-  .send-btn {
-    width: 40px;
-    height: 40px;
-    flex-shrink: 0;
-    display: grid;
-    place-items: center;
-    border-radius: 11px;
+  .icon {
     border: 0;
-    background: var(--accent);
-    color: #0b0b0d;
-    cursor: pointer;
+    font-size: 21px;
+    line-height: 1;
+    padding: 3px 6px;
+    color: #aeb3bd;
   }
-  .send-btn:disabled {
-    opacity: 0.45;
-    cursor: default;
+  .context {
+    padding: 12px 16px;
+    border-bottom: 1px solid #ffffff12;
   }
-  .footer {
+  .context > label {
+    color: #b8a787;
+    font-size: 9px;
+    letter-spacing: 1.5px;
+  }
+  .context > label span {
+    color: #737b88;
+    letter-spacing: 0;
+    margin-left: 8px;
+  }
+  .game-title {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    color: #f2ece2;
+    background: transparent;
+    border: none;
+    font:
+      600 15px/1.6 'Segoe UI',
+      sans-serif;
+    padding: 2px 0 8px;
+  }
+  .options,
+  .capture-bar,
+  .actions,
+  .shortcut {
     display: flex;
     align-items: center;
+    gap: 8px;
+  }
+  .options {
     justify-content: space-between;
-    gap: 10px;
-    padding: 8px 2px 2px;
-    font-family: var(--font-mono);
+    margin-top: 5px;
+  }
+  .providers {
+    display: flex;
+    gap: 4px;
+  }
+  .providers button {
+    font-size: 11px;
+    padding: 4px 8px;
+  }
+  .providers .chosen {
+    color: #f1d6a4;
+    border-color: #e4bf7c70;
+    background: #e4bf7c13;
+  }
+  label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  input[type='checkbox'] {
+    accent-color: #d8b67f;
+  }
+  .hint,
+  .capture-bar {
+    font-size: 11px;
+    color: #adb3bf;
+  }
+  .capture-bar {
+    margin-top: 10px;
+  }
+  .capture-bar button {
     font-size: 10px;
-    color: var(--color-t-lo);
+    padding: 1px 6px;
   }
-
-  /* translate view */
-  .translate {
-    padding: 4px 14px 14px;
-    gap: 14px;
+  .capture-bar > span {
+    margin-left: auto;
+    color: #7f899b;
+    font-size: 10px;
   }
-  .capture-box {
-    border-radius: 13px;
-    border: 1px solid var(--color-line);
-    background: linear-gradient(
-      135deg,
-      color-mix(in oklab, var(--accent) 10%, var(--color-ink-2)),
-      var(--color-ink-1)
-    );
-    padding: 12px;
+  .preview {
+    display: block;
+    width: 100%;
+    max-height: 100px;
+    object-fit: contain;
+    border-radius: 6px;
+    background: #090b10;
+    margin-top: 8px;
   }
-  .capture-head {
-    font-family: var(--font-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.06em;
-    color: var(--color-t-mid);
-    margin-bottom: 10px;
-  }
-  .capture-frame {
-    height: 74px;
-    border-radius: 9px;
-    border: 1px dashed color-mix(in oklab, var(--accent) 45%, transparent);
-    background: rgba(0, 0, 0, 0.18);
-  }
-  .lang-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .lang-chip {
-    padding: 8px 12px;
-    border-radius: 10px;
-    font-size: 12px;
-    color: var(--color-t-mid);
-    background: var(--color-ink-2);
-    border: 1px solid var(--color-line);
-  }
-  .lang-chip.accent {
-    color: var(--accent);
-    border-color: color-mix(in oklab, var(--accent) 32%, transparent);
-    background: color-mix(in oklab, var(--accent) 12%, transparent);
-  }
-  .lang-arrow {
-    color: var(--color-t-lo);
-  }
-  .translate-empty {
+  .messages {
     flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    gap: 6px;
-  }
-  .te-title {
-    font-size: 13.5px;
-    color: var(--color-t-mid);
-  }
-  .te-sub {
-    font-size: 12px;
-    color: var(--color-t-lo);
-  }
-  .translate-actions {
-    display: flex;
-    justify-content: center;
-    gap: 10px;
-  }
-  .recapture {
-    padding: 9px 16px;
-    border-radius: 11px;
-    border: 1px solid var(--color-line);
-    background: var(--color-ink-2);
-    color: var(--color-t-mid);
-    font-size: 12.5px;
-    font-weight: 500;
-    cursor: not-allowed;
-    opacity: 0.7;
-  }
-  .recapture.live {
-    cursor: pointer;
-    opacity: 1;
-    color: var(--color-t-hi);
-  }
-  .recapture.live:hover {
-    border-color: color-mix(in oklab, var(--accent) 34%, transparent);
-  }
-  .recapture.live:disabled {
-    cursor: default;
-    opacity: 0.45;
-  }
-  .translate-result {
-    flex: 1;
-    min-height: 0;
+    min-height: 70px;
     overflow-y: auto;
+    padding: 18px 16px;
+    scrollbar-width: thin;
+    scrollbar-color: #49515f transparent;
+  }
+  .welcome {
+    padding: 17px 0;
+  }
+  .eyebrow {
+    color: #a6aabb;
+    font-size: 9px;
+    letter-spacing: 1.5px;
+  }
+  h1 {
+    font-size: 24px;
+    font-weight: 500;
+    margin: 8px 0;
+    letter-spacing: -0.5px;
+  }
+  .welcome p {
+    color: #a3aab8;
+    font-size: 12px;
+    line-height: 1.8;
+  }
+  .suggestions {
     display: flex;
-    flex-direction: column;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 18px;
   }
-  .translate-text {
-    font-size: 13.5px;
-    line-height: 1.55;
-    color: var(--color-t-hi);
-    white-space: pre-wrap;
-    word-break: break-word;
+  .suggestions button {
+    font-size: 11px;
   }
-  .capture-frame.busy {
-    animation: pulse-soft 1.4s ease-in-out infinite;
+  article {
+    margin-bottom: 20px;
+  }
+  article.user {
+    margin-left: 24px;
+    border: 1px solid #ffffff0b;
+    background: #ffffff06;
+    border-radius: 9px;
+    padding: 10px 12px;
+  }
+  .message-label {
+    color: #c6b086;
+    font-size: 9px;
+    letter-spacing: 1.5px;
+    margin-bottom: 6px;
+  }
+  .user .message-label {
+    color: #929dad;
+  }
+  .message-label span {
+    float: right;
+    font-size: 9px;
+    letter-spacing: 0;
+  }
+  .status {
+    color: #8e9aa9;
+    font-size: 10px;
+    margin-top: 8px;
+  }
+  .pulse {
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.45;
+    }
+  }
+  footer {
+    padding: 12px 14px 9px;
+    border-top: 1px solid #ffffff15;
+    background: #11141aaa;
+  }
+  textarea {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    resize: vertical;
+    max-height: 120px;
+    min-height: 52px;
+    border: 1px solid #ffffff20;
+    border-radius: 8px;
+    background: #090c12;
+    color: #eee;
+    padding: 9px 10px;
+    font: inherit;
+  }
+  textarea::placeholder {
+    color: #777f8f;
+  }
+  .actions {
+    margin-top: 9px;
+  }
+  .speak {
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .recording {
+    color: #ffd2cb;
+    border-color: #ea8b7f;
+    background: #bc503430;
+  }
+  .voice-info {
+    flex: 1;
+    font-size: 9px;
+    color: #96a1b1;
+  }
+  .send {
+    color: #171717;
+    background: #e2c18b;
+    border: none;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .send:hover:not(:disabled) {
+    background: #f0d4a6;
+  }
+  .shortcut {
+    justify-content: space-between;
+    font-size: 9px;
+    color: #747d8e;
+    margin-top: 9px;
+  }
+  .notice {
+    color: #edb69d;
+    font-size: 11px;
+    padding: 8px 0;
+    overflow-wrap: anywhere;
+  }
+  .notice button {
+    margin-left: 5px;
+    padding: 0 5px;
+  }
+  select {
+    margin-top: 6px;
+    width: 100%;
+    color: #bcc5d4;
+    background: #1a1d25;
+    border: 1px solid #ffffff15;
+    border-radius: 5px;
+    font-size: 10px;
+    padding: 3px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse {
+      animation: none;
+    }
   }
 </style>

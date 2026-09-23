@@ -12,11 +12,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio_stream::wrappers::LinesStream;
 
-use super::ChatMessage;
+use super::{ChatMessage, ProviderEvent};
 
 /// Default Claude model when the user has not configured one. Codex ignores the
 /// model (that CLI rejects an explicit `-m`), so no default is needed there.
-pub(super) const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
+pub(super) const DEFAULT_CLAUDE_MODEL: &str = "sonnet";
 
 /// Name of the Codex working directory (used as both the WSL `/tmp/<name>` path
 /// and the Windows `temp_dir().join(<name>)` path).
@@ -78,6 +78,8 @@ pub(crate) struct CliConfig {
 #[derive(Debug, PartialEq, Eq)]
 enum Parsed {
     Text(String),
+    Status(String),
+    Draft(String),
     Error(String),
 }
 
@@ -357,7 +359,28 @@ fn parse_claude_line(line: &str) -> Option<Parsed> {
     let msg_type = v.get("type")?.as_str()?;
 
     match msg_type {
+        "user" => {
+            let blocks = v.pointer("/message/content")?.as_array()?;
+            let result = blocks.iter().find(|b| b["type"] == "tool_result")?;
+            Some(Parsed::Status(
+                if result["is_error"] == true {
+                    "Web research failed"
+                } else {
+                    "Web results received"
+                }
+                .into(),
+            ))
+        }
         "stream_event" => {
+            if let Some(block) = v.pointer("/event/content_block") {
+                if block["type"] == "tool_use" {
+                    return match block["name"].as_str() {
+                        Some("WebSearch") => Some(Parsed::Status("Searching the web…".into())),
+                        Some("WebFetch") => Some(Parsed::Status("Reading a source…".into())),
+                        _ => None,
+                    };
+                }
+            }
             let delta_type = v
                 .pointer("/event/delta/type")
                 .and_then(serde_json::Value::as_str)?;
@@ -396,6 +419,40 @@ fn parse_claude_line(line: &str) -> Option<Parsed> {
 /// are decoded.
 fn parse_codex_line(line: &str) -> Option<Parsed> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+        match v["type"].as_str() {
+            Some("item.started" | "item.completed")
+                if v.pointer("/item/type").and_then(serde_json::Value::as_str)
+                    == Some("web_search") =>
+            {
+                return Some(Parsed::Status(
+                    if v["type"] == "item.started" {
+                        "Searching the web…"
+                    } else {
+                        "Web results received"
+                    }
+                    .into(),
+                ));
+            }
+            Some("item.completed")
+                if v.pointer("/item/type").and_then(serde_json::Value::as_str)
+                    == Some("agent_message") =>
+            {
+                return v
+                    .pointer("/item/text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|s| Parsed::Draft(s.to_owned()));
+            }
+            Some("error" | "turn.failed") => {
+                return Some(Parsed::Error(
+                    v.pointer("/error/message")
+                        .or_else(|| v.get("message"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Codex request failed")
+                        .to_owned(),
+                ));
+            }
+            _ => {}
+        }
         if v.get("type").and_then(serde_json::Value::as_str) == Some("refusal") {
             let msg = v
                 .get("content")
@@ -447,7 +504,7 @@ pub(super) async fn stream_claude<F>(
     on_chunk: F,
 ) -> Result<(), String>
 where
-    F: FnMut(String) -> Result<(), String> + Send,
+    F: FnMut(ProviderEvent) -> Result<(), String> + Send,
 {
     if !cfg.claude.is_available() {
         return Err("Claude CLI is not available on this system.".to_owned());
@@ -457,7 +514,7 @@ where
     let mut cmd = if cfg.claude == CliMode::Wsl {
         let claude_args = format!(
             "claude -p --input-format stream-json --output-format stream-json \
-             --verbose --include-partial-messages --tools '' \
+             --verbose --include-partial-messages --tools WebSearch,WebFetch --allowedTools WebSearch,WebFetch --permission-mode dontAsk --safe-mode --strict-mcp-config --disable-slash-commands --no-chrome \
              --no-session-persistence --model {} --system-prompt {}",
             shell_escape(model),
             shell_escape(system_prompt),
@@ -476,7 +533,15 @@ where
             "--verbose",
             "--include-partial-messages",
             "--tools",
-            "",
+            "WebSearch,WebFetch",
+            "--allowedTools",
+            "WebSearch,WebFetch",
+            "--permission-mode",
+            "dontAsk",
+            "--safe-mode",
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--no-chrome",
             "--no-session-persistence",
             "--model",
             model,
@@ -486,6 +551,10 @@ where
         c
     };
 
+    let workdir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    if cfg.claude == CliMode::Native {
+        cmd.current_dir(workdir.path());
+    }
     let input = build_claude_input(messages, screenshot);
     // Claude emits stream-json and its parser drops non-JSON, so shell
     // banners cannot reach the user -- no sentinel needed.
@@ -497,19 +566,29 @@ pub(super) async fn stream_codex<F>(
     cfg: &CliConfig,
     system_prompt: &str,
     messages: &[ChatMessage],
+    screenshot: Option<&[u8]>,
     on_chunk: F,
 ) -> Result<(), String>
 where
-    F: FnMut(String) -> Result<(), String> + Send,
+    F: FnMut(ProviderEvent) -> Result<(), String> + Send,
 {
     if !cfg.codex.is_available() {
         return Err("Codex CLI is not available on this system.".to_owned());
     }
 
-    let work_dir = cfg.codex_workdir.as_str();
+    let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let native_dir = temp.path().to_string_lossy();
+    let work_dir = if cfg.codex == CliMode::Native {
+        native_dir.as_ref()
+    } else {
+        cfg.codex_workdir.as_str()
+    };
+    if screenshot.is_some() && cfg.codex == CliMode::Wsl {
+        return Err("Screenshot input currently requires native Windows Codex. Uncheck Screenshot or use Claude.".into());
+    }
     let mut cmd = if cfg.codex == CliMode::Wsl {
         let codex_cmd = format!(
-            "printf '%s\\n' {WSL_SENTINEL}; codex -a never -s read-only -C {} exec --skip-git-repo-check",
+            "printf '%s\\n' {WSL_SENTINEL}; codex --search -a never -s read-only --disable shell_tool --disable hooks --disable plugins -C {} exec --skip-git-repo-check --ignore-user-config --ephemeral --json",
             shell_escape(work_dir),
         );
         let mut c = Command::new("wsl.exe");
@@ -518,6 +597,13 @@ where
     } else {
         let mut c = Command::new("codex");
         c.args([
+            "--search",
+            "--disable",
+            "shell_tool",
+            "--disable",
+            "hooks",
+            "--disable",
+            "plugins",
             "-a",
             "never",
             "-s",
@@ -526,10 +612,18 @@ where
             work_dir,
             "exec",
             "--skip-git-repo-check",
+            "--ignore-user-config",
+            "--ephemeral",
+            "--json",
         ]);
         c
     };
 
+    if let Some(image) = screenshot {
+        let path = temp.path().join("game.png");
+        std::fs::write(&path, image).map_err(|e| format!("Cannot prepare screenshot: {e}"))?;
+        cmd.arg("--image").arg(path);
+    }
     let input = build_codex_input(system_prompt, messages);
     let sentinel = matches!(cfg.codex, CliMode::Wsl).then_some(WSL_SENTINEL);
     run_cli(
@@ -548,6 +642,10 @@ where
 /// that aborting the owning task drops the child; `kill_on_drop` then terminates
 /// it. Note: in WSL mode the direct child is `wsl.exe`, so this ends the relay
 /// but may orphan the in-distro CLI process (a known limitation, same as before).
+#[expect(
+    clippy::too_many_lines,
+    reason = "the subprocess pipes and result handling share one cancellation scope"
+)]
 async fn run_cli<F, P>(
     cmd: &mut Command,
     input: String,
@@ -557,7 +655,7 @@ async fn run_cli<F, P>(
     skip_until: Option<&str>,
 ) -> Result<(), String>
 where
-    F: FnMut(String) -> Result<(), String> + Send,
+    F: FnMut(ProviderEvent) -> Result<(), String> + Send,
     P: Fn(&str) -> Option<Parsed> + Send + Sync,
 {
     cmd.stdin(std::process::Stdio::piped());
@@ -614,6 +712,7 @@ where
         let mut lines = LinesStream::new(reader.lines());
         let mut total_bytes: usize = 0;
         let mut emitted = false;
+        let mut last_draft: Option<String> = None;
         // Set only when the command prints WSL_SENTINEL; everything the
         // interactive shell emitted before it is profile noise, not output.
         let mut waiting_for_sentinel = skip_until.is_some();
@@ -640,11 +739,19 @@ where
             match parse_line(&line) {
                 Some(Parsed::Text(text)) => {
                     emitted = true;
-                    on_chunk(text)?;
+                    on_chunk(ProviderEvent::Text(text))?;
                 }
+                Some(Parsed::Status(text)) => on_chunk(ProviderEvent::Status(text))?,
+                Some(Parsed::Draft(text)) => last_draft = Some(text),
                 Some(Parsed::Error(message)) => return Err(message),
                 None => {}
             }
+        }
+        // Codex JSONL may contain a planning message before its final answer.
+        // Only the last agent message is the answer displayed in the overlay.
+        if let Some(text) = last_draft {
+            emitted = true;
+            on_chunk(ProviderEvent::Text(text))?;
         }
         Ok(emitted)
     };
@@ -938,5 +1045,26 @@ mod tests {
             Some(Parsed::Text(object.to_owned()))
         );
         assert_eq!(parse_codex_line("42"), Some(Parsed::Text("42".to_owned())));
+    }
+
+    #[test]
+    fn cli_search_events_and_final_answer_match_live_jsonl() {
+        let claude = r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"WebSearch"}}}"#;
+        assert_eq!(
+            parse_claude_line(claude),
+            Some(Parsed::Status("Searching the web…".to_owned()))
+        );
+        let codex_search = r#"{"type":"item.started","item":{"type":"web_search"}}"#;
+        assert_eq!(
+            parse_codex_line(codex_search),
+            Some(Parsed::Status("Searching the web…".to_owned()))
+        );
+        let codex_answer = r#"{"type":"item.completed","item":{"type":"agent_message","text":"[Steam](https://store.steampowered.com/)"}}"#;
+        assert_eq!(
+            parse_codex_line(codex_answer),
+            Some(Parsed::Draft(
+                "[Steam](https://store.steampowered.com/)".to_owned()
+            ))
+        );
     }
 }

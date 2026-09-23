@@ -58,6 +58,10 @@ fn hide(app: &AppHandle) {
         return;
     };
     crate::util::log_if_err("hide overlay", overlay.hide());
+    crate::util::log_if_err(
+        "emit overlay hidden",
+        app.emit_to("overlay", "overlay-hidden", ()),
+    );
     if let Some(game) = live_game(app) {
         focus_window(game.hwnd);
     }

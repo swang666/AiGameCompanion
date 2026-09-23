@@ -10,6 +10,28 @@ pub(crate) fn capture_window_png(_hwnd: i64) -> Result<Vec<u8>, String> {
     Err("screen capture is only supported on Windows".into())
 }
 
+#[cfg(all(test, windows))]
+mod native_smoke {
+    #![allow(
+        clippy::expect_used,
+        reason = "a failed manual smoke test should explain the failure"
+    )]
+    use windows::core::w;
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+
+    #[test]
+    #[ignore = "requires the launcher to be running with its window visible"]
+    fn capture_visible_launcher_window() {
+        // SAFETY: the wide literal is static and the class name is omitted.
+        let hwnd = unsafe { FindWindowW(None, w!("AI Game Companion")) }
+            .expect("start Sage.exe before running this smoke test");
+        let png = super::capture_window_png(hwnd.0 as i64)
+            .expect("Windows Graphics Capture should return the launcher window");
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(png.len() > 1000);
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use std::time::{Duration, Instant};

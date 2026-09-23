@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai;
+mod capture;
 mod commands;
 mod discovery;
 mod models;
@@ -10,6 +11,7 @@ mod process_watch;
 mod secrets;
 mod state;
 mod util;
+mod voice;
 
 use ai::AiState;
 use overlay::OverlayState;
@@ -49,6 +51,7 @@ fn main() {
     let toggle = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyG);
     let translate = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyT);
     let quick_ask = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyA);
+    let voice = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyV);
 
     let run_result = tauri::Builder::default()
         // Must be registered first. Two instances would otherwise share one
@@ -78,12 +81,16 @@ fn main() {
                         overlay::trigger(app, "translate-request");
                     } else if shortcut == &quick_ask {
                         overlay::trigger(app, "quick-ask");
+                    } else if shortcut == &voice {
+                        overlay::trigger(app, "voice-request");
                     }
                 })
                 .build(),
         )
         .manage(OverlayState::default())
         .manage(AiState::default())
+        .manage(capture::CaptureState::default())
+        .manage(voice::VoiceState::default())
         .setup(move |app| {
             // Under `windows_subsystem = "windows"` there is no console and no
             // dialog, so panicking here kills the launcher with no visible
@@ -122,7 +129,7 @@ fn main() {
             }
 
             // Register the overlay hotkeys (log + continue on conflict).
-            for shortcut in [toggle, translate, quick_ask] {
+            for shortcut in [toggle, translate, quick_ask, voice] {
                 if let Err(e) = app.global_shortcut().register(shortcut) {
                     tracing::warn!("hotkey registration failed: {e}");
                 }
@@ -208,6 +215,10 @@ fn main() {
             commands::ai::translate_screen,
             commands::ai::set_gemini_key,
             commands::ai::recheck_clis,
+            capture::capture_game,
+            voice::voice_status,
+            voice::transcribe_voice,
+            voice::cancel_voice,
             overlay::hide_overlay,
         ])
         .run(tauri::generate_context!());

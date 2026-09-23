@@ -1,3 +1,9 @@
+> **Local Sage fork:** This working tree adds voice input, web search through
+> installed Claude/Codex clients, captured-frame previews, and separate chats for
+> each game. Use [README-FORK.md](README-FORK.md) for current build and play
+> instructions. The original project description below is retained for
+> attribution and upstream context.
+
 <div align="center">
 
 # AI Game Companion

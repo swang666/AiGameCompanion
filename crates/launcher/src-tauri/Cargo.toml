@@ -39,6 +39,7 @@ png = "0.18"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 toml = "1.1"
 base64 = "0.23"
+tempfile = "3"
 
 # Win32 foreground-window detection + focus handoff (overlay companion). Only
 # compiled for Windows targets; the launcher's pure-logic tests run on Linux.
