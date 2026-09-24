@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 // Deserialize via String so an unrecognised source (a state file written by a
@@ -52,6 +53,8 @@ pub(crate) struct LauncherSettings {
     pub launch_on_startup: bool,
     /// Overlay AI provider selection ("gemini" / "claude" / "openai").
     pub active_provider: String,
+    /// Optional model ID or alias per provider; an absent entry uses its default.
+    pub model_overrides: BTreeMap<String, String>,
 }
 
 impl Default for LauncherSettings {
@@ -61,6 +64,7 @@ impl Default for LauncherSettings {
             minimize_to_tray: true,
             launch_on_startup: false,
             active_provider: "gemini".to_owned(),
+            model_overrides: BTreeMap::new(),
         }
     }
 }

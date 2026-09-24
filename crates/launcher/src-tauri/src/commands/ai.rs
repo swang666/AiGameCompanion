@@ -22,6 +22,8 @@ pub(crate) struct AskInput {
     request_id: u64,
     conversation_id: u64,
     provider: Provider,
+    #[serde(default)]
+    model: Option<String>,
     messages: Vec<ChatMessage>,
     hwnd: i64,
     pid: u32,
@@ -37,6 +39,9 @@ pub(crate) fn ask_sage(
     request: AskInput,
     channel: Channel<SageEvent>,
 ) -> Result<(), String> {
+    if let Some(model) = request.model.as_deref() {
+        crate::ai::validate_model_name(model)?;
+    }
     if request.messages.is_empty()
         || request.messages.len() > 25
         || request
@@ -66,6 +71,7 @@ pub(crate) fn ask_sage(
             request_id: request.request_id,
             conversation_id: request.conversation_id,
             provider: request.provider,
+            model: request.model,
             messages: request.messages,
             game,
             image,
@@ -95,6 +101,32 @@ pub(crate) fn set_active_provider(
         provider
             .as_str()
             .clone_into(&mut launcher.settings.active_provider);
+    }
+    state.save()
+}
+
+/// Persist one provider's model choice; blank restores its existing default.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn set_model_override(
+    provider: Provider,
+    model: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let model = model.trim();
+    if !model.is_empty() {
+        crate::ai::validate_model_name(model)?;
+    }
+    {
+        let mut launcher = state.launcher.lock();
+        if model.is_empty() {
+            launcher.settings.model_overrides.remove(provider.as_str());
+        } else {
+            launcher
+                .settings
+                .model_overrides
+                .insert(provider.as_str().to_owned(), model.to_owned());
+        }
     }
     state.save()
 }

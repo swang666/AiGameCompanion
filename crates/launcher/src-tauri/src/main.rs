@@ -46,7 +46,7 @@ fn show_main_window(app: &tauri::AppHandle) {
     reason = "these two sites run before the tracing logger is initialised"
 )]
 fn main() {
-    // Overlay hotkeys (Ctrl+Shift+G/T/A): modifier chords, not bare F-keys, and
+    // Overlay hotkeys (Ctrl+Shift+G/T/A/V): modifier chords, not bare F-keys, and
     // not Ctrl+Alt (which equals AltGr on international keyboards).
     let toggle = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyG);
     let translate = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyT);
@@ -212,6 +212,7 @@ fn main() {
             commands::ai::cancel_sage,
             commands::ai::available_providers,
             commands::ai::set_active_provider,
+            commands::ai::set_model_override,
             commands::ai::translate_screen,
             commands::ai::set_gemini_key,
             commands::ai::recheck_clis,

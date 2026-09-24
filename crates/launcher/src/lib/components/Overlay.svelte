@@ -47,6 +47,15 @@
   let game = $state<GameTarget | null>(null);
   let session = $state<Session>({ title: '', messages: [], draft: '' });
   let provider = $state<Provider>('claude');
+  let models = $state<Record<Provider, string>>({ claude: '', openai: '', gemini: '' });
+  const modelPlaceholders: Record<Provider, string> = {
+    claude: 'sonnet (default)',
+    openai: 'Codex default',
+    gemini: 'Gemini config default',
+  };
+  const modelValid = $derived(
+    !models[provider].trim() || /^[A-Za-z0-9._-]{1,128}$/.test(models[provider].trim()),
+  );
   let availability = $state<Availability>({
     gemini: false,
     claude: false,
@@ -77,6 +86,7 @@
   const canSend = $derived(
     Boolean(game) &&
       availability[provider] &&
+      modelValid &&
       !asking &&
       !capturing &&
       voicePhase === 'idle' &&
@@ -107,12 +117,22 @@
     }
   }
   async function selectProvider(value: Provider) {
+    void saveModel(provider);
     provider = value;
     if (value === 'openai' && !availability.openai_images && attach) toggleCapture();
     try {
       await invoke('set_active_provider', { provider });
     } catch (e) {
       error = String(e);
+    }
+  }
+  async function saveModel(value: Provider) {
+    const model = models[value].trim();
+    if (model && !/^[A-Za-z0-9._-]{1,128}$/.test(model)) return;
+    try {
+      await invoke('set_model_override', { provider: value, model });
+    } catch (e) {
+      error = `Could not save model: ${String(e)}`;
     }
   }
   function stop() {
@@ -254,6 +274,7 @@
           requestId: id,
           conversationId: convo,
           provider,
+          model: models[provider].trim() || null,
           messages: outgoing,
           hwnd: target.hwnd,
           pid: target.pid,
@@ -334,6 +355,7 @@
     else cancelVoice();
   }
   async function hide() {
+    await saveModel(provider);
     cancelVoice();
     try {
       await invoke('hide_overlay');
@@ -357,7 +379,11 @@
     document.body.style.background = 'transparent';
     void (async () => {
       try {
-        const settings = await invoke<{ active_provider: Provider }>('get_settings');
+        const settings = await invoke<{
+          active_provider: Provider;
+          model_overrides?: Partial<Record<Provider, string>>;
+        }>('get_settings');
+        models = { ...models, ...settings.model_overrides };
         if (providers.some((p) => p.id === settings.active_provider))
           provider = settings.active_provider;
       } catch {
@@ -431,6 +457,31 @@
       </div>
       <label class="hint"><input type="checkbox" bind:checked={hintOnly} />Hints first</label>
     </div>
+    <div class="model-row">
+      <label for="model-choice">MODEL</label>
+      <input
+        id="model-choice"
+        aria-invalid={!modelValid}
+        aria-label="Model for {provider}"
+        disabled={asking}
+        list={provider === 'claude' ? 'claude-models' : undefined}
+        maxlength="128"
+        onblur={() => void saveModel(provider)}
+        oninput={(event) => {
+          models[provider] = event.currentTarget.value;
+        }}
+        placeholder={modelPlaceholders[provider]}
+        value={models[provider]}
+      />
+      <datalist id="claude-models"
+        ><option value="sonnet"></option><option value="opus"></option><option value="haiku"
+        ></option></datalist
+      >
+      <span>Blank = default</span>
+    </div>
+    {#if !modelValid}<div class="model-error" role="alert">
+        Use a model ID with letters, numbers, dots, hyphens, or underscores.
+      </div>{/if}
     <div class="capture-bar">
       <label
         ><input
@@ -565,7 +616,7 @@
     <div class="shortcut">
       <span title={voiceInfo}
         >{voiceReady ? 'Voice stays on this PC' : 'Win+H also works in the input'}</span
-      ><span>Esc to return</span>
+      ><span>Ctrl+Shift+V to start/stop · Esc to return</span>
     </div>
   </footer>
 </main>
@@ -705,6 +756,41 @@
   .capture-bar {
     font-size: 11px;
     color: #adb3bf;
+  }
+  .model-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 9px;
+  }
+  .model-row label {
+    color: #b8a787;
+    font-size: 9px;
+    letter-spacing: 1.5px;
+  }
+  .model-row input {
+    box-sizing: border-box;
+    min-width: 0;
+    flex: 1;
+    padding: 4px 7px;
+    border: 1px solid #ffffff20;
+    border-radius: 6px;
+    color: #e9e9ed;
+    background: #ffffff08;
+    font: inherit;
+    font-size: 11px;
+  }
+  .model-row input[aria-invalid='true'] {
+    border-color: #e8a383;
+  }
+  .model-row span,
+  .model-error {
+    color: #9ba3b1;
+    font-size: 10px;
+  }
+  .model-error {
+    margin-top: 4px;
+    color: #e8a383;
   }
   .capture-bar {
     margin-top: 10px;

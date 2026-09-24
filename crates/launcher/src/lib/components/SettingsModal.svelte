@@ -52,6 +52,7 @@
     { title: 'Toggle overlay', sub: 'Show or hide Sage over the game', keys: 'G' },
     { title: 'Translate screen', sub: 'Capture and translate on-screen text', keys: 'T' },
     { title: 'Quick ask', sub: 'Screenshot + ask your preset question', keys: 'A' },
+    { title: 'Start / stop voice', sub: 'Record a question in the overlay', keys: 'V' },
   ];
   const TOGGLES: { key: keyof Settings; label: string; sub: string }[] = [
     {

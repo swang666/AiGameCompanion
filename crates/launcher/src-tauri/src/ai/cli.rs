@@ -283,7 +283,7 @@ pub(crate) fn ensure_codex_workdir(mode: CliMode) -> Option<String> {
 }
 
 /// Validate a model name: ASCII alphanumeric + hyphens, dots, underscores.
-fn validate_model_name(model: &str) -> Result<(), String> {
+pub(super) fn validate_model_name(model: &str) -> Result<(), String> {
     if model.is_empty() || model.len() > 128 {
         return Err("Invalid model name.".to_owned());
     }
@@ -564,6 +564,7 @@ where
 /// Stream a Codex response by spawning the Codex CLI in `exec` mode.
 pub(super) async fn stream_codex<F>(
     cfg: &CliConfig,
+    model: Option<&str>,
     system_prompt: &str,
     messages: &[ChatMessage],
     screenshot: Option<&[u8]>,
@@ -574,6 +575,9 @@ where
 {
     if !cfg.codex.is_available() {
         return Err("Codex CLI is not available on this system.".to_owned());
+    }
+    if let Some(model) = model {
+        validate_model_name(model)?;
     }
 
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -587,8 +591,10 @@ where
         return Err("Screenshot input currently requires native Windows Codex. Uncheck Screenshot or use Claude.".into());
     }
     let mut cmd = if cfg.codex == CliMode::Wsl {
+        let model_arg =
+            model.map_or_else(String::new, |value| format!(" -m {}", shell_escape(value)));
         let codex_cmd = format!(
-            "printf '%s\\n' {WSL_SENTINEL}; codex --search -a never -s read-only --disable shell_tool --disable hooks --disable plugins -C {} exec --skip-git-repo-check --ignore-user-config --ephemeral --json",
+            "printf '%s\\n' {WSL_SENTINEL}; codex --search -a never -s read-only --disable shell_tool --disable hooks --disable plugins -C {} exec{model_arg} --skip-git-repo-check --ignore-user-config --ephemeral --json",
             shell_escape(work_dir),
         );
         let mut c = Command::new("wsl.exe");
@@ -611,6 +617,11 @@ where
             "-C",
             work_dir,
             "exec",
+        ]);
+        if let Some(model) = model {
+            c.args(["--model", model]);
+        }
+        c.args([
             "--skip-git-repo-check",
             "--ignore-user-config",
             "--ephemeral",

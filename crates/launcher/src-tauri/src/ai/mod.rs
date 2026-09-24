@@ -21,6 +21,10 @@ use crate::overlay::GameInfo;
 
 pub(crate) use cli::{detect_all, CliConfig};
 
+pub(crate) fn validate_model_name(model: &str) -> Result<(), String> {
+    cli::validate_model_name(model)
+}
+
 /// Backstop timeout for a single request, covering a hung CLI that never closes
 /// stdout. Gemini has its own (shorter) HTTP timeout, so this is the CLI ceiling.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
@@ -137,6 +141,7 @@ pub(crate) struct RequestParams {
     pub request_id: u64,
     pub conversation_id: u64,
     pub provider: Provider,
+    pub model: Option<String>,
     pub messages: Vec<ChatMessage>,
     pub game: GameInfo,
     pub image: Option<Vec<u8>>,
@@ -238,6 +243,7 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
         request_id,
         conversation_id,
         provider,
+        model,
         messages,
         game,
         image,
@@ -268,7 +274,7 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
                     &messages,
                     &system_prompt,
                     screenshot,
-                    &cfg.model,
+                    model.as_deref().unwrap_or(&cfg.model),
                     &cfg.api_key,
                     |text| on_event(ProviderEvent::Text(text)),
                 )
@@ -277,7 +283,7 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
             Provider::Claude => {
                 cli::stream_claude(
                     &cli_cfg,
-                    cli::DEFAULT_CLAUDE_MODEL,
+                    model.as_deref().unwrap_or(cli::DEFAULT_CLAUDE_MODEL),
                     &system_prompt,
                     &messages,
                     screenshot.as_deref(),
@@ -288,6 +294,7 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
             Provider::Openai => {
                 cli::stream_codex(
                     &cli_cfg,
+                    model.as_deref(),
                     &system_prompt,
                     &messages,
                     image.as_deref(),

@@ -15,13 +15,16 @@ pub(crate) fn get_settings(state: State<'_, AppState>) -> LauncherSettings {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn update_settings(
-    settings: LauncherSettings,
+    mut settings: LauncherSettings,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
     let launch_on_startup = settings.launch_on_startup;
     {
         let mut launcher = state.launcher.lock();
+        // Model choices are changed by their own command. A Settings dialog
+        // opened earlier must not overwrite a newer choice from the overlay.
+        settings.model_overrides = launcher.settings.model_overrides.clone();
         launcher.settings = settings;
     }
 

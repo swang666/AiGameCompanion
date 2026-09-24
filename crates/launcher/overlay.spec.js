@@ -7,10 +7,12 @@ test('switching games keeps their chats separate and renders safe source links',
     const callbacks = new Map();
     const listeners = new Map();
     const sent = [];
+    const savedModels = [];
     let nextCallback = 1;
     let nextCapture = 1;
     window.__fake = {
       sent,
+      savedModels,
       listeners,
       emit(event, payload) {
         callbacks.get(listeners.get(event))?.({ event, payload, id: 1 });
@@ -31,7 +33,15 @@ test('switching games keeps their chats separate and renders safe source links',
           listeners.set(args.event, args.handler);
           return nextCallback++;
         }
-        if (command === 'get_settings') return { active_provider: 'claude' };
+        if (command === 'get_settings')
+          return {
+            active_provider: 'claude',
+            model_overrides: { claude: 'haiku', openai: 'gpt-6-sol' },
+          };
+        if (command === 'set_model_override') {
+          savedModels.push(args);
+          return null;
+        }
         if (command === 'available_providers')
           return { claude: true, openai: true, openai_images: true, gemini: false };
         if (command === 'voice_status') return { ready: true, message: 'Local voice' };
@@ -96,8 +106,14 @@ test('switching games keeps their chats separate and renders safe source links',
     }),
   );
   await expect(page.getByAltText('Game frame that will be sent with your question')).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Model for claude' })).toHaveValue('haiku');
+  await page.getByRole('combobox', { name: 'Model for claude' }).fill('opus');
   await page.getByRole('textbox', { name: 'Your question' }).fill('Question A');
   await page.getByRole('button', { name: 'Send ↑' }).click();
+  await expect
+    .poll(() => page.evaluate(() => window.__fake.savedModels.some((x) => x.model === 'opus')))
+    .toBe(true);
+  expect((await page.evaluate(() => window.__fake.sent))[0].model).toBe('opus');
   await expect(page.getByRole('button', { name: 'Steam' })).toBeVisible();
   await page.screenshot({ path: 'test-results/overlay.png' });
   expect(await page.evaluate(() => typeof window.bad)).toBe('undefined');
@@ -112,10 +128,16 @@ test('switching games keeps their chats separate and renders safe source links',
   await expect(page.getByRole('textbox', { name: 'PLAYING edit if needed' })).toHaveValue('Game B');
   await expect(page.getByText('Question A')).toHaveCount(0);
   await expect(page.getByAltText('Game frame that will be sent with your question')).toBeVisible();
+  await page.getByRole('button', { name: 'Codex' }).click();
+  await expect(page.getByRole('textbox', { name: 'Model for openai' })).toHaveValue('gpt-6-sol');
   await page.getByRole('textbox', { name: 'Your question' }).fill('Question B');
+  await page.getByRole('textbox', { name: 'Model for openai' }).fill('bad/model');
+  await expect(page.getByRole('button', { name: 'Send ↑' })).toBeDisabled();
+  await page.getByRole('textbox', { name: 'Model for openai' }).fill('gpt-6-astra');
   await page.getByRole('button', { name: 'Send ↑' }).click();
   const sent = await page.evaluate(() => window.__fake.sent);
   expect(sent[1].messages).toEqual([{ role: 'user', content: 'Question B' }]);
+  expect(sent[1].model).toBe('gpt-6-astra');
   await page.evaluate(() =>
     window.__fake.emit('overlay-status', {
       hwnd: 12,
