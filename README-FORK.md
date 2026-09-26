@@ -75,7 +75,7 @@ Open **Settings → Providers** and confirm your provider is detected. Start a g
 
 For voice, choose **Speech language** before recording. It defaults to **Chinese (中文)** in this fork; use English or Auto-detect when appropriate. Speak after pressing **Ctrl+Shift+V**, press it again to stop, correct the transcript if needed, then press **Enter**. Whisper runs locally and transcribes in the selected language. It has no separate API fee. If local voice is not installed, Windows **Win+H** dictation also works in the question box.
 
-The **Model** field accepts a model ID or provider alias for the selected provider; leave it blank for that provider's default. The choice is saved separately for Claude, Codex, and Gemini and takes effect on the next question. **Hints first** asks for brief, lower-spoiler help. Change **Text size** in **Settings → Launcher**, or use **A− / A+** in the overlay. Chats are kept separately for each detected game executable while Sage is running.
+The **Model** dropdown offers **Default**, provider-specific presets, and **Custom model…** for entering a model ID or alias. Presets are suggestions, not a live list of models your account can access. Choose Default to use the provider's existing settings; custom IDs are saved and restored too. The choice is saved separately for Claude, Codex, and Gemini and takes effect on the next question. **Hints first** asks for brief, lower-spoiler help. Change **Text size** in **Settings → Launcher**, or use **A− / A+** in the overlay. Chats are kept separately for each detected game executable while Sage is running.
 
 ## Troubleshooting
 

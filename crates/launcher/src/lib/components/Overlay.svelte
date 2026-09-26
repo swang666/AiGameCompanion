@@ -59,11 +59,41 @@
   let session = $state<Session>({ title: '', messages: [], draft: '' });
   let provider = $state<Provider>('claude');
   let models = $state<Record<Provider, string>>({ claude: '', openai: '', gemini: '' });
-  const modelPlaceholders: Record<Provider, string> = {
-    claude: 'sonnet (default)',
-    openai: 'Codex default',
-    gemini: 'Gemini config default',
+  const modelDefaults: Record<Provider, string> = {
+    claude: 'Default (Sonnet)',
+    openai: 'Default (Codex settings)',
+    gemini: 'Default (Gemini settings)',
   };
+  // Presets, not an account entitlement list. Custom IDs keep newer/private models usable.
+  // Checked 2026-09-26: developers.openai.com/codex/models and ai.google.dev/gemini-api/docs/models.
+  const modelOptions: Record<Provider, { id: string; name: string }[]> = {
+    claude: [
+      { id: 'sonnet', name: 'Sonnet' },
+      { id: 'opus', name: 'Opus' },
+      { id: 'haiku', name: 'Haiku' },
+    ],
+    openai: [
+      { id: 'gpt-6-sol', name: 'GPT-6 Sol' },
+      { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
+      { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
+    ],
+    gemini: [
+      { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
+      { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash-Lite' },
+      { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (preview)' },
+    ],
+  };
+  const customModel = $state<Record<Provider, boolean>>({
+    claude: false,
+    openai: false,
+    gemini: false,
+  });
+  const modelSelection = $derived(
+    customModel[provider] ||
+      (models[provider] && !modelOptions[provider].some((option) => option.id === models[provider]))
+      ? 'custom'
+      : models[provider],
+  );
   const modelValid = $derived(
     !models[provider].trim() || /^[A-Za-z0-9._-]{1,128}$/.test(models[provider].trim()),
   );
@@ -167,6 +197,12 @@
     } catch (e) {
       error = `Could not save model: ${String(e)}`;
     }
+  }
+  function selectModel(value: string) {
+    customModel[provider] = value === 'custom';
+    if (value === 'custom') return;
+    models[provider] = value;
+    void saveModel(provider);
   }
   function stop() {
     const id = activeRequest;
@@ -467,9 +503,8 @@
 <main class="overlay">
   <header data-tauri-drag-region>
     <div class="brand" data-tauri-drag-region>
-      <span class="spark">✦</span> SAGE <span class="subtitle" class:compact={textSize === 'larger'}
-        >game companion</span
-      >
+      <span class="spark">✦</span> SAGE
+      <span class="subtitle" class:compact={textSize === 'larger'}>game companion</span>
     </div>
     <button
       class="size-button"
@@ -525,26 +560,43 @@
     </div>
     <div class="model-row">
       <label for="model-choice">MODEL</label>
-      <input
+      <select
         id="model-choice"
-        aria-invalid={!modelValid}
         aria-label="Model for {provider}"
         disabled={asking}
-        list={provider === 'claude' ? 'claude-models' : undefined}
-        maxlength="128"
-        onblur={() => void saveModel(provider)}
-        oninput={(event) => {
-          models[provider] = event.currentTarget.value;
+        onchange={(event) => {
+          selectModel(event.currentTarget.value);
         }}
-        placeholder={modelPlaceholders[provider]}
-        value={models[provider]}
-      />
-      <datalist id="claude-models"
-        ><option value="sonnet"></option><option value="opus"></option><option value="haiku"
-        ></option></datalist
+        value={modelSelection}
       >
-      <span>Blank = default</span>
+        <option value="">{modelDefaults[provider]}</option>
+        {#each modelOptions[provider] as option (option.id)}
+          <option value={option.id}>{option.name}</option>
+        {/each}
+        <option value="custom">Custom model…</option>
+      </select>
     </div>
+    {#if modelSelection === 'custom'}
+      <div class="model-row">
+        <label for="custom-model">MODEL ID</label>
+        <input
+          id="custom-model"
+          aria-invalid={!modelValid}
+          aria-label="Custom model for {provider}"
+          disabled={asking}
+          maxlength="128"
+          onblur={() => void saveModel(provider)}
+          oninput={(event) => {
+            customModel[provider] = true;
+            models[provider] = event.currentTarget.value;
+          }}
+          placeholder="Enter a model ID"
+          value={models[provider]}
+        />
+        <span>Blank = default</span>
+      </div>
+    {/if}
+    <div class="model-note">Model access depends on your provider account.</div>
     {#if !modelValid}<div class="model-error" role="alert">
         Use a model ID with letters, numbers, dots, hyphens, or underscores.
       </div>{/if}
@@ -861,7 +913,8 @@
     font-size: 9px;
     letter-spacing: 1.5px;
   }
-  .model-row input {
+  .model-row input,
+  .model-row select {
     box-sizing: border-box;
     min-width: 0;
     flex: 1;
@@ -872,6 +925,15 @@
     background: #ffffff08;
     font: inherit;
     font-size: 11px;
+  }
+  .model-row select {
+    color-scheme: dark;
+    background: #20232b;
+  }
+  .model-note {
+    margin-top: 4px;
+    color: #9ba3b1;
+    font-size: 10px;
   }
   .model-row input[aria-invalid='true'] {
     border-color: #e8a383;

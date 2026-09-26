@@ -42,7 +42,7 @@ test('switching games keeps their chats separate and renders safe source links',
           return {
             active_provider: 'claude',
             text_size: 'normal',
-            model_overrides: { claude: 'haiku', openai: 'gpt-6-sol' },
+            model_overrides: { claude: 'haiku', openai: 'my-codex-model' },
           };
         if (command === 'plugin:webview|set_webview_zoom') {
           zoomValues.push(args.value);
@@ -57,7 +57,7 @@ test('switching games keeps their chats separate and renders safe source links',
           return null;
         }
         if (command === 'available_providers')
-          return { claude: true, openai: true, openai_images: true, gemini: false };
+          return { claude: true, openai: true, openai_images: true, gemini: true };
         if (command === 'voice_status') return { ready: true, message: 'Local voice' };
         if (command === 'transcribe_voice') {
           window.__fake.wav = args.wav;
@@ -122,7 +122,14 @@ test('switching games keeps their chats separate and renders safe source links',
   );
   await expect(page.getByAltText('Game frame that will be sent with your question')).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Model for claude' })).toHaveValue('haiku');
-  await page.getByRole('combobox', { name: 'Model for claude' }).fill('opus');
+  await expect(page.locator('#model-choice option')).toHaveText([
+    'Default (Sonnet)',
+    'Sonnet',
+    'Opus',
+    'Haiku',
+    'Custom model…',
+  ]);
+  await page.getByRole('combobox', { name: 'Model for claude' }).selectOption('opus');
   await page.getByRole('textbox', { name: 'Your question' }).fill('Question A');
   await page.getByRole('button', { name: 'Send ↑' }).click();
   await expect
@@ -144,15 +151,37 @@ test('switching games keeps their chats separate and renders safe source links',
   await expect(page.getByText('Question A')).toHaveCount(0);
   await expect(page.getByAltText('Game frame that will be sent with your question')).toBeVisible();
   await page.getByRole('button', { name: 'Codex' }).click();
-  await expect(page.getByRole('textbox', { name: 'Model for openai' })).toHaveValue('gpt-6-sol');
+  await expect(page.getByRole('combobox', { name: 'Model for openai' })).toHaveValue('custom');
+  await expect(page.getByRole('textbox', { name: 'Custom model for openai' })).toHaveValue(
+    'my-codex-model',
+  );
+  await page.getByRole('textbox', { name: 'Custom model for openai' }).fill('gpt-6-sol');
+  await expect(page.getByRole('textbox', { name: 'Custom model for openai' })).toBeVisible();
+  await page.getByRole('combobox', { name: 'Model for openai' }).selectOption('gpt-6-sol');
+  await expect(page.getByRole('textbox', { name: 'Custom model for openai' })).toHaveCount(0);
+  await page.getByRole('combobox', { name: 'Model for openai' }).selectOption('custom');
   await page.getByRole('textbox', { name: 'Your question' }).fill('Question B');
-  await page.getByRole('textbox', { name: 'Model for openai' }).fill('bad/model');
+  await page.getByRole('textbox', { name: 'Custom model for openai' }).fill('bad/model');
   await expect(page.getByRole('button', { name: 'Send ↑' })).toBeDisabled();
-  await page.getByRole('textbox', { name: 'Model for openai' }).fill('gpt-6-astra');
+  await page.getByRole('textbox', { name: 'Custom model for openai' }).fill('my-new-codex-model');
   await page.getByRole('button', { name: 'Send ↑' }).click();
   const sent = await page.evaluate(() => window.__fake.sent);
   expect(sent[1].messages).toEqual([{ role: 'user', content: 'Question B' }]);
-  expect(sent[1].model).toBe('gpt-6-astra');
+  expect(sent[1].model).toBe('my-new-codex-model');
+  await page.getByRole('button', { name: 'Gemini', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Model for gemini' }).selectOption('gemini-3.8-flash');
+  await expect
+    .poll(() => page.evaluate(() => window.__fake.savedModels.at(-1)))
+    .toEqual({ provider: 'gemini', model: 'gemini-3.8-flash' });
+  await page.getByRole('combobox', { name: 'Model for gemini' }).selectOption('');
+  await expect
+    .poll(() => page.evaluate(() => window.__fake.savedModels.at(-1)))
+    .toEqual({ provider: 'gemini', model: '' });
+  await page.getByRole('textbox', { name: 'Your question' }).fill('Use the default model');
+  await page.getByRole('button', { name: 'Send ↑' }).click();
+  await expect.poll(() => page.evaluate(() => window.__fake.sent.at(-1).model)).toBeNull();
+  await page.getByRole('button', { name: 'Claude', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: 'Model for claude' })).toHaveValue('opus');
   await page.evaluate(() =>
     window.__fake.emit('overlay-status', {
       hwnd: 12,
