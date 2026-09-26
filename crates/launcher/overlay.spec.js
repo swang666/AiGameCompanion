@@ -47,6 +47,7 @@ test('switching games keeps their chats separate and renders safe source links',
         if (command === 'voice_status') return { ready: true, message: 'Local voice' };
         if (command === 'transcribe_voice') {
           window.__fake.wav = args.wav;
+          window.__fake.language = args.language;
           return 'Where should I go?';
         }
         if (command === 'capture_game')
@@ -148,6 +149,7 @@ test('switching games keeps their chats separate and renders safe source links',
   );
   await expect(page.getByText('Question A')).toBeVisible();
   await page.getByRole('button', { name: '● Speak' }).click();
+  await expect(page.getByRole('combobox', { name: 'Speech language' })).toHaveValue('zh');
   await expect(page.getByRole('button', { name: '■ Finish speaking' })).toBeVisible();
   await page.waitForTimeout(500);
   await page.getByRole('button', { name: '■ Finish speaking' }).click();
@@ -155,6 +157,9 @@ test('switching games keeps their chats separate and renders safe source links',
     'Where should I go?',
   );
   expect(await page.evaluate(() => atob(window.__fake.wav).slice(0, 4))).toBe('RIFF');
+  expect(await page.evaluate(() => window.__fake.language)).toBe('zh');
+  await page.getByRole('combobox', { name: 'Speech language' }).selectOption('en');
+  expect(await page.evaluate(() => localStorage.getItem('sage-speech-language'))).toBe('en');
 });
 
 test('overlay updates when startup CLI detection finishes', async ({ page }) => {

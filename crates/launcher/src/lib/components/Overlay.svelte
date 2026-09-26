@@ -42,6 +42,16 @@
     { id: 'openai', name: 'Codex' },
     { id: 'gemini', name: 'Gemini' },
   ];
+  const speechLanguages = [
+    { id: 'zh', name: 'Chinese (中文)' },
+    { id: 'auto', name: 'Auto-detect' },
+    { id: 'en', name: 'English' },
+    { id: 'ja', name: 'Japanese' },
+    { id: 'ko', name: 'Korean' },
+    { id: 'es', name: 'Spanish' },
+    { id: 'fr', name: 'French' },
+    { id: 'de', name: 'German' },
+  ];
   const sessions = new SvelteMap<string, Session>();
   const recorder = new VoiceRecorder();
   let game = $state<GameTarget | null>(null);
@@ -74,6 +84,7 @@
   let voiceInfo = $state('Checking local voice…');
   let microphones = $state<MediaDeviceInfo[]>([]);
   let microphone = $state('');
+  let speechLanguage = $state('zh');
   let input = $state<HTMLTextAreaElement | null>(null);
   let messageList = $state<HTMLElement | null>(null);
   let sequence = 0;
@@ -343,7 +354,11 @@
     try {
       const wav = await recorder.finish();
       if (seq !== voiceSequence) return;
-      const text = await invoke<string>('transcribe_voice', { requestId: id, wav });
+      const text = await invoke<string>('transcribe_voice', {
+        requestId: id,
+        wav,
+        language: speechLanguage,
+      });
       if (seq !== voiceSequence) return;
       session.draft = [session.draft, text].filter(Boolean).join(' ').slice(0, 4000);
       void tick().then(() => input?.focus());
@@ -384,6 +399,13 @@
   onMount(() => {
     document.documentElement.style.background = 'transparent';
     document.body.style.background = 'transparent';
+    try {
+      const savedLanguage = localStorage.getItem('sage-speech-language');
+      if (speechLanguages.some((item) => item.id === savedLanguage))
+        speechLanguage = savedLanguage ?? 'zh';
+    } catch {
+      /* Local storage may be unavailable; Chinese remains the default. */
+    }
     void (async () => {
       try {
         const settings = await invoke<{
@@ -614,6 +636,25 @@
           onclick={() => send()}
           type="button">Send ↑</button
         >{/if}
+    </div>
+    <div class="speech-language">
+      <label for="speech-language">Speech language</label>
+      <select
+        id="speech-language"
+        aria-label="Speech language"
+        disabled={voicePhase !== 'idle'}
+        onchange={(event) => {
+          speechLanguage = event.currentTarget.value;
+          try {
+            localStorage.setItem('sage-speech-language', speechLanguage);
+          } catch {
+            /* The current choice still applies to this session. */
+          }
+        }}
+        value={speechLanguage}
+      >
+        {#each speechLanguages as item (item.id)}<option value={item.id}>{item.name}</option>{/each}
+      </select>
     </div>
     {#if microphones.length > 1}<select
         aria-label="Microphone"
@@ -935,6 +976,20 @@
     flex: 1;
     font-size: 9px;
     color: #96a1b1;
+  }
+  .speech-language {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 7px;
+    color: #a7b1c0;
+    font-size: 10px;
+  }
+  .speech-language select {
+    width: auto;
+    min-width: 130px;
+    margin-top: 0;
   }
   .send {
     color: #171717;

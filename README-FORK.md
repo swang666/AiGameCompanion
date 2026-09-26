@@ -11,6 +11,8 @@ This is a local extension of [AI Game Companion](https://github.com/Wintersta7e/
 
 **Ctrl+Shift+V** opens the overlay and starts or stops speaking. **Ctrl+Shift+A** asks for a hint. **Ctrl+Shift+T** asks for a translation. If local voice is unavailable, focus the question box and use Windows **Win+H** dictation.
 
+The **Speech language** control defaults to Chinese (中文) for this setup. Choose English, another listed language, or Auto-detect before recording when you switch languages. The choice is remembered on this PC. The multilingual Whisper model transcribes speech in its original language; it does not translate your question.
+
 The **Model** field in the overlay lets you choose a model ID or alias for the current provider. Choices are saved separately for Claude, Codex, and Gemini. Leave the field blank to use Claude Sonnet, the Codex CLI default, or the Gemini model in `config.toml`, respectively. Claude offers `sonnet`, `opus`, and `haiku` suggestions; other model IDs can be typed directly. Changes apply to the next question.
 
 The overlay remembers a separate chat for each game executable while the app stays open. You can edit the detected game title. The **Hints first** option keeps answers brief and reduces spoilers. Uncheck **Screenshot** to ask using text alone. A failed capture blocks a screenshot request until you Retake or choose text only.
@@ -21,7 +23,7 @@ Claude is restricted to WebSearch/WebFetch and Codex to live search with file/sh
 
 Windows 10/11, WebView2, Node.js 22.13+ (or 24+), Rust stable, and Visual Studio C++ Build Tools are needed. The build script runs `npm ci`, builds the Svelte frontend, and builds a portable Rust executable. It keeps the upstream MIT notice. On this PC, Rust and Visual Studio C++ Build Tools were installed during implementation; the voice model is already installed in the app data folder.
 
-The `-WithVoice` build downloads a pinned whisper.cpp v1.8.3 x64 runtime and English base model, checks their SHA-256 hashes, and copies them beside Sage. The standalone voice setup installs the same files under `%APPDATA%\com.aigamecompanion.launcher\voice`. The model is approximately 148 MB. Audio is captured only while recording and a temporary WAV is deleted after transcription. The app does not automatically listen to game audio.
+The `-WithVoice` build downloads a pinned whisper.cpp v1.8.3 x64 runtime and multilingual base model, checks their SHA-256 hashes, and copies them beside Sage. The standalone voice setup installs the same files under `%APPDATA%\com.aigamecompanion.launcher\voice`. The model is approximately 148 MB. Audio is captured only while recording and a temporary WAV is deleted after transcription. The app does not automatically listen to game audio.
 
 For development, run `npm ci` in `crates/launcher`, then `npm run tauri dev`. Run `npm run check`, `npm run lint`, `npm test`, `npm run test:ui`, and `cargo test --workspace --all-features --locked` before changing the app. The upstream README has additional Windows capture and display-mode notes.
 

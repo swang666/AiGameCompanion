@@ -47,11 +47,11 @@ pub(crate) struct VoiceStatus {
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn voice_status(app: AppHandle) -> Result<VoiceStatus, String> {
     let dir = voice_dir(&app)?;
-    let ready = dir.join("whisper-cli.exe").is_file() && dir.join("ggml-base.en.bin").is_file();
+    let ready = dir.join("whisper-cli.exe").is_file() && dir.join("ggml-base.bin").is_file();
     Ok(VoiceStatus {
         ready,
         message: if ready {
-            "Local voice · English".into()
+            "Local voice · multilingual".into()
         } else {
             "Voice needs a one-time setup: run scripts/setup-voice.ps1. You can also use Win+H in the question box.".into()
         },
@@ -85,12 +85,24 @@ fn validate_wav(bytes: &[u8]) -> Result<(), String> {
     }
 }
 
+fn validate_language(language: &str) -> Result<(), String> {
+    if language == "auto"
+        || (language.len() == 2 && language.bytes().all(|byte| byte.is_ascii_lowercase()))
+    {
+        Ok(())
+    } else {
+        Err("Choose a supported speech language.".into())
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn transcribe_voice(
     app: AppHandle,
     request_id: u64,
     wav: String,
+    language: String,
 ) -> Result<String, String> {
+    validate_language(&language)?;
     if wav.len() > 2_000_000 {
         return Err("Recording is too long.".into());
     }
@@ -104,10 +116,10 @@ pub(crate) async fn transcribe_voice(
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
     let mut cmd = tokio::process::Command::new(dir.join("whisper-cli.exe"));
     cmd.args(["-m"])
-        .arg(dir.join("ggml-base.en.bin"))
+        .arg(dir.join("ggml-base.bin"))
         .arg("-f")
         .arg(&path)
-        .args(["-l", "en", "-nt", "-np", "-t", "4", "-ng"])
+        .args(["-l", &language, "-nt", "-np", "-t", "4", "-ng"])
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
     #[cfg(windows)]
@@ -157,5 +169,13 @@ mod tests {
         assert!(validate_wav(&[]).is_err());
         assert!(validate_wav(&[0; 48]).is_err());
         assert!(validate_wav(&vec![0; 1_500_000]).is_err());
+    }
+
+    #[test]
+    fn accepts_chinese_and_auto_but_rejects_invalid_language_codes() {
+        assert!(validate_language("zh").is_ok());
+        assert!(validate_language("auto").is_ok());
+        assert!(validate_language("zh;rm").is_err());
+        assert!(validate_language("korean").is_err());
     }
 }
