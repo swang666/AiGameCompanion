@@ -405,13 +405,14 @@
     try {
       const wav = await recorder.finish();
       if (seq !== voiceSequence) return;
-      const text = await invoke<string>('transcribe_voice', {
+      const result = await invoke<{ text: string; engine: string }>('transcribe_voice', {
         requestId: id,
         wav,
         language: speechLanguage,
       });
       if (seq !== voiceSequence) return;
-      session.draft = [session.draft, text].filter(Boolean).join(' ').slice(0, 4000);
+      voiceInfo = result.engine;
+      session.draft = [session.draft, result.text].filter(Boolean).join(' ').slice(0, 4000);
       void tick().then(() => input?.focus());
     } catch (e) {
       if (seq === voiceSequence) error = String(e);
@@ -751,9 +752,9 @@
           >{/each}</select
       >{/if}
     <div class="shortcut">
-      <span title={voiceInfo}
-        >{voiceReady ? 'Voice stays on this PC' : 'Win+H also works in the input'}</span
-      ><span>Ctrl+Shift+V to start/stop · Esc to return</span>
+      <span title={voiceInfo}>{voiceReady ? voiceInfo : 'Win+H also works in the input'}</span><span
+        >Ctrl+Shift+V to start/stop · Esc to return</span
+      >
     </div>
   </footer>
 </main>

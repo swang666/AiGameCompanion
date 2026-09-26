@@ -25,7 +25,7 @@ pub(crate) fn update_settings(
         // Model choices are changed by their own command. A Settings dialog
         // opened earlier must not overwrite a newer choice from the overlay.
         settings.model_overrides = launcher.settings.model_overrides.clone();
-        settings.text_size = launcher.settings.text_size.clone();
+        settings.text_size.clone_from(&launcher.settings.text_size);
         launcher.settings = settings;
     }
 
@@ -56,7 +56,7 @@ pub(crate) fn set_text_size(
     if !matches!(size.as_str(), "small" | "normal" | "large" | "larger") {
         return Err("Invalid text size.".to_owned());
     }
-    state.launcher.lock().settings.text_size = size.clone();
+    state.launcher.lock().settings.text_size.clone_from(&size);
     state.save()?;
     app.emit("text-size-changed", size)
         .map_err(|e| format!("Could not update text size: {e}"))

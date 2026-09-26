@@ -2,7 +2,7 @@
 use base64::Engine as _;
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, State};
 
 #[derive(Default)]
@@ -43,17 +43,117 @@ pub(crate) struct VoiceStatus {
     message: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VoiceEngine {
+    Turbo,
+    Base,
+}
+
+impl VoiceEngine {
+    fn executable(self, dir: &Path) -> PathBuf {
+        dir.join(match self {
+            Self::Turbo => "cuda/whisper-cli.exe",
+            Self::Base => "whisper-cli.exe",
+        })
+    }
+
+    fn model(self, dir: &Path) -> PathBuf {
+        dir.join(match self {
+            Self::Turbo => "ggml-large-v3-turbo.bin",
+            Self::Base => "ggml-base.bin",
+        })
+    }
+}
+
+fn installed_engines(dir: &Path) -> Vec<VoiceEngine> {
+    [VoiceEngine::Turbo, VoiceEngine::Base]
+        .into_iter()
+        .filter(|engine| engine.executable(dir).is_file() && engine.model(dir).is_file())
+        .collect()
+}
+
+#[derive(Serialize)]
+pub(crate) struct Transcription {
+    text: String,
+    engine: String,
+}
+
+async fn transcribe_with_fallback(
+    dir: &Path,
+    path: &Path,
+    language: &str,
+) -> Result<Transcription, String> {
+    let mut errors = Vec::new();
+    for engine in installed_engines(dir) {
+        let mut cmd = tokio::process::Command::new(engine.executable(dir));
+        cmd.arg("-m")
+            .arg(engine.model(dir))
+            .arg("-f")
+            .arg(path)
+            .args(["-l", language, "-nt", "-t", "4"])
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+        if engine == VoiceEngine::Base {
+            cmd.arg("-ng");
+        }
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000);
+        // Bound each attempt, leaving time for the CPU fallback if CUDA hangs.
+        let output = tokio::time::timeout(std::time::Duration::from_secs(45), cmd.output()).await;
+        match output {
+            Ok(Ok(output)) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                if text.is_empty() {
+                    return Err("No speech recognized. Please try again.".into());
+                }
+                let diagnostics = String::from_utf8_lossy(&output.stderr);
+                let label = match engine {
+                    VoiceEngine::Turbo if diagnostics.contains("using CUDA") => {
+                        "Whisper Turbo · GPU"
+                    }
+                    VoiceEngine::Turbo => "Whisper Turbo · CPU",
+                    VoiceEngine::Base if !errors.is_empty() => "Whisper Base · CPU fallback",
+                    VoiceEngine::Base => "Whisper Base · CPU",
+                };
+                return Ok(Transcription {
+                    text,
+                    engine: label.into(),
+                });
+            }
+            Ok(Ok(output)) => errors.push(format!(
+                "{engine:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+                    .chars()
+                    .take(500)
+                    .collect::<String>()
+            )),
+            Ok(Err(error)) => errors.push(format!("{engine:?}: {error}")),
+            Err(_) => errors.push(format!("{engine:?}: transcription timed out")),
+        }
+        tracing::warn!(
+            ?engine,
+            "Voice engine failed; trying the next installed engine"
+        );
+    }
+    if errors.is_empty() {
+        Err("Voice is not installed. Run scripts/setup-voice.ps1.".into())
+    } else {
+        Err(format!("Voice failed. {}", errors.join("; ")))
+    }
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn voice_status(app: AppHandle) -> Result<VoiceStatus, String> {
     let dir = voice_dir(&app)?;
-    let ready = dir.join("whisper-cli.exe").is_file() && dir.join("ggml-base.bin").is_file();
+    let engines = installed_engines(&dir);
+    let ready = !engines.is_empty();
     Ok(VoiceStatus {
         ready,
-        message: if ready {
-            "Local voice · multilingual".into()
-        } else {
-            "Voice needs a one-time setup: run scripts/setup-voice.ps1. You can also use Win+H in the question box.".into()
+        message: match engines.first() {
+            Some(VoiceEngine::Turbo) => "Whisper Turbo · GPU preferred".into(),
+            Some(VoiceEngine::Base) => "Whisper Base · CPU".into(),
+            None => "Voice needs a one-time setup: run scripts/setup-voice.ps1. You can also use Win+H in the question box.".into(),
         },
     })
 }
@@ -101,7 +201,7 @@ pub(crate) async fn transcribe_voice(
     request_id: u64,
     wav: String,
     language: String,
-) -> Result<String, String> {
+) -> Result<Transcription, String> {
     validate_language(&language)?;
     if wav.len() > 2_000_000 {
         return Err("Recording is too long.".into());
@@ -114,16 +214,6 @@ pub(crate) async fn transcribe_voice(
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let path = temp.path().join("question.wav");
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-    let mut cmd = tokio::process::Command::new(dir.join("whisper-cli.exe"));
-    cmd.args(["-m"])
-        .arg(dir.join("ggml-base.bin"))
-        .arg("-f")
-        .arg(&path)
-        .args(["-l", &language, "-nt", "-np", "-t", "4", "-ng"])
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
     let (cancel, cancelled) = tokio::sync::oneshot::channel();
     let state = app.state::<VoiceState>();
     let previous = {
@@ -142,17 +232,7 @@ pub(crate) async fn transcribe_voice(
     }
     let result = tokio::select! {
         _ = cancelled => Err("Transcription cancelled.".to_owned()),
-        output = tokio::time::timeout(std::time::Duration::from_secs(90), cmd.output()) => {
-            match output {
-                Ok(Ok(output)) if output.status.success() => {
-                    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                    if text.is_empty() { Err("No speech recognized. Please try again.".into()) } else { Ok(text) }
-                }
-                Ok(Ok(output)) => Err(format!("Voice failed: {}", String::from_utf8_lossy(&output.stderr).chars().take(500).collect::<String>())),
-                Ok(Err(e)) => Err(format!("Cannot start local voice: {e}. Run scripts/setup-voice.ps1.")),
-                Err(_) => Err("Local transcription timed out. Try a shorter question.".into()),
-            }
-        }
+        result = transcribe_with_fallback(&dir, &path, &language) => result,
     };
     app.state::<VoiceState>()
         .active
@@ -164,6 +244,56 @@ pub(crate) async fn transcribe_voice(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incomplete_gpu_install_keeps_cpu_available() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("whisper-cli.exe"), [])?;
+        std::fs::write(dir.path().join("ggml-base.bin"), [])?;
+        std::fs::create_dir(dir.path().join("cuda"))?;
+        std::fs::write(dir.path().join("cuda/whisper-cli.exe"), [])?;
+        assert_eq!(installed_engines(dir.path()), vec![VoiceEngine::Base]);
+        std::fs::write(dir.path().join("ggml-large-v3-turbo.bin"), [])?;
+        assert_eq!(
+            installed_engines(dir.path()),
+            vec![VoiceEngine::Turbo, VoiceEngine::Base]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires SAGE_VOICE_TEST_DIR and SAGE_VOICE_TEST_WAV with installed CUDA voice assets"]
+    async fn gpu_transcription_and_failed_gpu_cpu_fallback(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = PathBuf::from(std::env::var("SAGE_VOICE_TEST_DIR")?);
+        let wav = PathBuf::from(std::env::var("SAGE_VOICE_TEST_WAV")?);
+        let result = transcribe_with_fallback(&dir, &wav, "zh").await?;
+        assert_eq!(result.engine, "Whisper Turbo · GPU");
+        assert!(result.text.contains("空之轨迹"));
+
+        let broken = tempfile::tempdir()?;
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_file()
+                && path.file_name() != Some(std::ffi::OsStr::new("ggml-large-v3-turbo.bin"))
+            {
+                if let Some(name) = path.file_name() {
+                    std::fs::copy(&path, broken.path().join(name))?;
+                }
+            }
+        }
+        std::fs::create_dir(broken.path().join("cuda"))?;
+        // Simulate a damaged GPU runtime without touching the installed files.
+        std::fs::write(
+            broken.path().join("cuda/whisper-cli.exe"),
+            b"invalid executable",
+        )?;
+        std::fs::write(broken.path().join("ggml-large-v3-turbo.bin"), [])?;
+        let result = transcribe_with_fallback(broken.path(), &wav, "zh").await?;
+        assert_eq!(result.engine, "Whisper Base · CPU fallback");
+        assert!(result.text.contains("空之轨迹"));
+        Ok(())
+    }
     #[test]
     fn rejects_truncated_or_non_audio_payloads() {
         assert!(validate_wav(&[]).is_err());

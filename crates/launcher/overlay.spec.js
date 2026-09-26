@@ -62,7 +62,7 @@ test('switching games keeps their chats separate and renders safe source links',
         if (command === 'transcribe_voice') {
           window.__fake.wav = args.wav;
           window.__fake.language = args.language;
-          return 'Where should I go?';
+          return { text: 'Where should I go?', engine: 'Whisper Turbo · GPU' };
         }
         if (command === 'capture_game')
           return {
@@ -201,6 +201,7 @@ test('switching games keeps their chats separate and renders safe source links',
   );
   expect(await page.evaluate(() => atob(window.__fake.wav).slice(0, 4))).toBe('RIFF');
   expect(await page.evaluate(() => window.__fake.language)).toBe('zh');
+  await expect(page.getByText('Whisper Turbo · GPU', { exact: true })).toBeVisible();
   await page.getByRole('combobox', { name: 'Speech language' }).selectOption('en');
   expect(await page.evaluate(() => localStorage.getItem('sage-speech-language'))).toBe('en');
 

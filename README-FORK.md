@@ -58,6 +58,20 @@ To build without bundling voice, omit `-WithVoice`. You can add local voice late
 
 ## 4. Run and test
 
+### Optional: stronger voice recognition with an NVIDIA GPU
+
+For an NVIDIA GPU with sufficient free VRAM and a current driver, install Whisper **large-v3-turbo** with the CUDA runtime:
+
+```powershell
+& .\scripts\setup-voice.ps1 -Destination .\out\Sage\voice -Gpu
+```
+
+Or build and bundle it in one step with `& .\scripts\build-windows.ps1 -GpuVoice`. The GPU option downloads about 2 GB of additional files (1.62 GB model plus CUDA runtime), verifies their hashes, and keeps the smaller base model for CPU fallback. The runtime includes its CUDA libraries; a separate CUDA Toolkit installation is not required. Copy the whole `out\Sage` folder if moving the app. Install into the `voice` folder beside the executable you actually run: that portable folder takes precedence over the app-data installation.
+
+Sage prefers Turbo when both its model and CUDA executable are installed. The voice status shows **GPU preferred** initially, then the engine actually used after transcription. If the GPU process fails or times out, Sage retries using **Whisper Base · CPU fallback**. Each attempt has a 45-second limit and can be cancelled. The transcription process exits after each recording, releasing its GPU memory; the first request can take longer while files load. Recognition still runs locally and has no transcription API fee.
+
+### Start Sage
+
 ```powershell
 & .\out\Sage\Sage.exe
 ```
@@ -82,7 +96,7 @@ The **Model** dropdown offers **Default**, provider-specific presets, and **Cust
 - **“No assistant detected,” or Claude/Codex is greyed out:** First verify the CLI runs and is signed in from a new PowerShell window (`claude --version` or `codex --version`), then choose **Re-check CLIs** in Sage. Restart Sage after changing PATH. Codex Desktop and WSL may also be detected, but a native CLI gives the most direct screenshot support.
 - **`config.toml not found`:** That was an older setup path. Build and run this branch, then enter a Gemini key in **Settings → Providers** if using Gemini. Claude and Codex need no `config.toml`.
 - **Chinese speech appears in another language:** Choose **Chinese (中文)** rather than Auto-detect before recording. Check the transcript before sending.
-- **Voice is unavailable:** Build with `-WithVoice` or run `scripts\setup-voice.ps1`; keep the `voice` folder beside `Sage.exe` for a portable build. Windows microphone access must be allowed for desktop apps.
+- **Voice is unavailable:** Build with `-WithVoice` or run `scripts\setup-voice.ps1`; keep the `voice` folder beside `Sage.exe` for a portable build. Windows microphone access must be allowed for desktop apps. For GPU voice, use `-Gpu` as shown above and check the reported engine after a recording; CPU fallback indicates the GPU attempt failed. Update the NVIDIA driver or free GPU memory before retrying.
 - **Overlay or screenshot is missing/black:** Use windowed or borderless fullscreen mode. An external overlay cannot display over true exclusive fullscreen, and protected or minimized game windows may resist capture.
 - **Build fails at Rust linking:** Confirm the Visual Studio **Desktop development with C++** workload and Windows SDK are installed, then open a fresh PowerShell window. If copying `Sage.exe` fails, close the running app first.
 
