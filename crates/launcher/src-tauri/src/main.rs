@@ -19,7 +19,7 @@ use state::AppState;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
-    Manager,
+    Emitter, Manager,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -145,7 +145,16 @@ fn main() {
                     cfg.claude,
                     cfg.codex
                 );
-                detect_handle.state::<AiState>().set_cli(cfg);
+                let ai_state = detect_handle.state::<AiState>();
+                ai_state.set_cli(cfg);
+                util::log_if_err(
+                    "notify overlay that CLI detection finished",
+                    detect_handle.emit_to(
+                        "overlay",
+                        "provider-availability-changed",
+                        ai_state.availability(),
+                    ),
+                );
             });
 
             // Build system tray (always present, shown/hidden based on setting)

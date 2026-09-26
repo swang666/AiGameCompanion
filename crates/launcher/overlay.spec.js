@@ -156,3 +156,59 @@ test('switching games keeps their chats separate and renders safe source links',
   );
   expect(await page.evaluate(() => atob(window.__fake.wav).slice(0, 4))).toBe('RIFF');
 });
+
+test('overlay updates when startup CLI detection finishes', async ({ page }) => {
+  await page.addInitScript(() => {
+    const callbacks = new Map();
+    const listeners = new Map();
+    let nextCallback = 1;
+    let detected = false;
+    window.__fake = {
+      finishDetection() {
+        detected = true;
+        callbacks.get(listeners.get('provider-availability-changed'))?.({
+          event: 'provider-availability-changed',
+          payload: {
+            claude: true,
+            openai: false,
+            openai_images: false,
+            gemini: false,
+          },
+          id: 1,
+        });
+      },
+    };
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: 'overlay' } },
+      transformCallback(callback) {
+        const id = nextCallback++;
+        callbacks.set(id, callback);
+        return id;
+      },
+      unregisterCallback(id) {
+        callbacks.delete(id);
+      },
+      async invoke(command, args = {}) {
+        if (command === 'plugin:event|listen') {
+          listeners.set(args.event, args.handler);
+          return nextCallback++;
+        }
+        if (command === 'get_settings') return { active_provider: 'claude' };
+        if (command === 'available_providers')
+          return {
+            claude: detected,
+            openai: false,
+            openai_images: false,
+            gemini: false,
+          };
+        if (command === 'voice_status') return { ready: true, message: 'Local voice' };
+        return null;
+      },
+    };
+  });
+  await page.goto('/');
+  await expect(page.getByText(/No assistant detected/)).toBeVisible();
+  await page.evaluate(() => window.__fake.finishDetection());
+  await expect(page.getByText(/No assistant detected/)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Claude' })).toBeEnabled();
+});

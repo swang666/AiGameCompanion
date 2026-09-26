@@ -25,6 +25,9 @@ const CODEX_WORKDIR: &str = "aigc-codex-workdir";
 const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
 /// How many stderr lines to keep for the failure message.
 const STDERR_TAIL_LINES: usize = 5;
+/// A missing or misconfigured CLI (especially WSL) must not hold the startup
+/// detection thread forever and hide other working providers.
+const CLI_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Marker printed by the WSL shell immediately before the CLI runs.
 ///
 /// `bash -lic` sources the user's interactive `.bashrc`, which is where many
@@ -92,6 +95,37 @@ fn silent(cmd: &mut std::process::Command) -> &mut std::process::Command {
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd
+}
+
+/// Run a version probe with a deadline. `Command::status()` has no timeout;
+/// `wsl.exe` can remain alive indefinitely when the distro is unavailable.
+fn probe(cmd: &mut std::process::Command, label: &str, timeout: std::time::Duration) -> bool {
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if start.elapsed() < timeout => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Ok(None) => {
+                tracing::warn!("{label} version probe timed out after {timeout:?}");
+                if child.kill().is_ok() {
+                    drop(child.wait());
+                }
+                return false;
+            }
+            Err(error) => {
+                tracing::warn!("{label} version probe failed: {error}");
+                if child.kill().is_ok() {
+                    drop(child.wait());
+                }
+                return false;
+            }
+        }
+    }
 }
 
 /// The WSL user's home directory, resolved once.
@@ -176,18 +210,21 @@ fn shell_escape(s: &str) -> String {
 /// bare PATH. See `WSL_SENTINEL` for how the interactive shell's banner output
 /// is kept out of the model stream.
 pub(crate) fn detect_cli(name: &str) -> CliMode {
-    let native = silent(std::process::Command::new(name).arg("--version"))
-        .status()
-        .is_ok_and(|status| status.success());
+    let native = probe(
+        silent(std::process::Command::new(name).arg("--version")),
+        name,
+        CLI_PROBE_TIMEOUT,
+    );
     if native {
         return CliMode::Native;
     }
 
     let version_cmd = format!("{name} --version");
-    let wsl =
-        silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-lic", &version_cmd]))
-            .status()
-            .is_ok_and(|status| status.success());
+    let wsl = probe(
+        silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-lic", &version_cmd])),
+        "WSL",
+        CLI_PROBE_TIMEOUT,
+    );
     if wsl {
         return CliMode::Wsl;
     }
@@ -809,6 +846,29 @@ mod tests {
     )]
 
     use super::*;
+
+    #[test]
+    fn version_probe_times_out_instead_of_blocking_detection() {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("powershell.exe");
+            command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 10"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = std::process::Command::new("sleep");
+            command.arg("10");
+            command
+        };
+        let start = std::time::Instant::now();
+        assert!(!probe(
+            silent(&mut command),
+            "test",
+            std::time::Duration::from_millis(100),
+        ));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    }
 
     fn msg(role: &str, content: &str) -> ChatMessage {
         ChatMessage {

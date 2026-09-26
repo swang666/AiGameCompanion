@@ -83,6 +83,7 @@
   let voiceSequence = 0;
   let activeVoice = 0;
   let capturePending: Promise<void> | null = null;
+  let availabilityRevision = 0;
   const canSend = $derived(
     Boolean(game) &&
       availability[provider] &&
@@ -103,12 +104,18 @@
     });
   });
 
+  function applyAvailability(next: Availability) {
+    availability = next;
+    if (!availability[provider])
+      provider = providers.find((p) => availability[p.id])?.id ?? 'claude';
+    if (provider === 'openai' && !availability.openai_images && attach) toggleCapture();
+  }
   async function refresh() {
+    const revision = ++availabilityRevision;
     try {
-      availability = await invoke<Availability>('available_providers');
-      if (!availability[provider])
-        provider = providers.find((p) => availability[p.id])?.id ?? 'claude';
-      if (provider === 'openai' && !availability.openai_images && attach) toggleCapture();
+      const next = await invoke<Availability>('available_providers');
+      if (revision !== availabilityRevision) return;
+      applyAvailability(next);
       const status = await invoke<{ ready: boolean; message: string }>('voice_status');
       voiceReady = status.ready;
       voiceInfo = status.message;
@@ -394,6 +401,10 @@
     const listeners = [
       listen<GameTarget | null>('overlay-status', (event) => {
         useGame(event.payload);
+      }),
+      listen<Availability>('provider-availability-changed', (event) => {
+        availabilityRevision++;
+        applyAvailability(event.payload);
       }),
       listen('overlay-hidden', cancelVoice),
       listen('voice-request', toggleVoice),
