@@ -51,6 +51,8 @@ pub(crate) struct LauncherSettings {
     pub scan_on_startup: bool,
     pub minimize_to_tray: bool,
     pub launch_on_startup: bool,
+    /// Saved text and control size for both webview windows.
+    pub text_size: String,
     /// Overlay AI provider selection ("gemini" / "claude" / "openai").
     pub active_provider: String,
     /// Optional model ID or alias per provider; an absent entry uses its default.
@@ -63,6 +65,7 @@ impl Default for LauncherSettings {
             scan_on_startup: true,
             minimize_to_tray: true,
             launch_on_startup: false,
+            text_size: "normal".to_owned(),
             active_provider: "gemini".to_owned(),
             model_overrides: BTreeMap::new(),
         }

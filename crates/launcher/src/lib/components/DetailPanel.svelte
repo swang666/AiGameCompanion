@@ -82,14 +82,6 @@
     return s === 'gog' ? 'GOG' : s.charAt(0).toUpperCase() + s.slice(1);
   }
 
-  async function openConfig() {
-    fileError = null;
-    try {
-      await invoke('open_game_config');
-    } catch (e) {
-      fileError = String(e);
-    }
-  }
   async function openLogs() {
     fileError = null;
     try {
@@ -99,7 +91,7 @@
     }
   }
 
-  // Hover affordance for the outline buttons (Config/Logs): accent border + bg lift.
+  // Hover affordance for the outline buttons (Settings/Logs): accent border + bg lift.
   function fileBtnEnter(e: MouseEvent) {
     const el = e.currentTarget as HTMLElement;
     el.style.borderColor = 'color-mix(in oklab, var(--accent) 38%, transparent)';
@@ -292,11 +284,11 @@
           <button
             style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
             class="px-[18px] py-[13px] rounded-[11px] font-display text-[12.5px] font-medium tracking-[0.03em] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
-            onclick={openConfig}
+            onclick={() => onOpenSettings?.()}
             onmouseenter={fileBtnEnter}
             onmouseleave={fileBtnLeave}
-            title="Open config.toml"
-            type="button">Config</button
+            title="Configure providers and Sage"
+            type="button">Settings</button
           >
           <button
             style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"

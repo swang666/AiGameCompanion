@@ -48,7 +48,7 @@ pub(crate) enum CliMode {
     /// Not available on this system.
     #[default]
     Unavailable,
-    /// Available directly on the Windows PATH.
+    /// Available natively on Windows, either on PATH or via Codex Desktop.
     Native,
     /// Available inside WSL (invoke via `wsl.exe`).
     Wsl,
@@ -74,6 +74,7 @@ impl CliMode {
 pub(crate) struct CliConfig {
     pub claude: CliMode,
     pub codex: CliMode,
+    pub codex_executable: String,
     pub codex_workdir: String,
 }
 
@@ -232,6 +233,58 @@ pub(crate) fn detect_cli(name: &str) -> CliMode {
     CliMode::Unavailable
 }
 
+/// Codex Desktop installs its CLI in a versioned folder that may not be on the
+/// PATH inherited by apps launched from Explorer. Prefer the newest install.
+#[cfg(windows)]
+fn desktop_codex_executable(bin_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut candidates = std::fs::read_dir(bin_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("codex.exe"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok());
+    candidates.pop()
+}
+
+fn detect_codex() -> (CliMode, String) {
+    if probe(
+        silent(std::process::Command::new("codex").arg("--version")),
+        "Codex",
+        CLI_PROBE_TIMEOUT,
+    ) {
+        return (CliMode::Native, "codex".to_owned());
+    }
+
+    #[cfg(windows)]
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let bin_dir = std::path::PathBuf::from(local_app_data)
+            .join("OpenAI")
+            .join("Codex")
+            .join("bin");
+        if let Some(path) = desktop_codex_executable(&bin_dir) {
+            if probe(
+                silent(std::process::Command::new(&path).arg("--version")),
+                "Codex Desktop",
+                CLI_PROBE_TIMEOUT,
+            ) {
+                tracing::info!("Codex CLI detected via desktop installation");
+                return (CliMode::Native, path.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    let version_cmd = "codex --version";
+    if probe(
+        silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-lic", version_cmd])),
+        "WSL",
+        CLI_PROBE_TIMEOUT,
+    ) {
+        return (CliMode::Wsl, String::new());
+    }
+    (CliMode::Unavailable, String::new())
+}
+
 /// Detect both CLIs and resolve the Codex working directory in one pass.
 ///
 /// Codex without a usable workdir is reported `Unavailable`: the binary is
@@ -239,7 +292,7 @@ pub(crate) fn detect_cli(name: &str) -> CliMode {
 /// file or directory" from the CLI long after the user picked the provider.
 pub(crate) fn detect_all() -> CliConfig {
     let claude = detect_cli("claude");
-    let detected_codex = detect_cli("codex");
+    let (detected_codex, codex_executable) = detect_codex();
     let (codex, codex_workdir) = ensure_codex_workdir(detected_codex).map_or_else(
         || (CliMode::Unavailable, String::new()),
         |dir| (detected_codex, dir),
@@ -247,6 +300,7 @@ pub(crate) fn detect_all() -> CliConfig {
     CliConfig {
         claude,
         codex,
+        codex_executable,
         codex_workdir,
     }
 }
@@ -638,7 +692,7 @@ where
         c.args(["--", "bash", "-lic", &codex_cmd]);
         c
     } else {
-        let mut c = Command::new("codex");
+        let mut c = Command::new(&cfg.codex_executable);
         c.args([
             "--search",
             "--disable",
@@ -846,6 +900,19 @@ mod tests {
     )]
 
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn finds_codex_desktop_cli_when_not_on_path() {
+        let install = tempfile::tempdir().unwrap();
+        let bin = install.path().join("OpenAI").join("Codex").join("bin");
+        let versioned = bin.join("version-123");
+        std::fs::create_dir_all(&versioned).unwrap();
+        let exe = versioned.join("codex.exe");
+        std::fs::write(&exe, b"test executable").unwrap();
+
+        assert_eq!(desktop_codex_executable(&bin), Some(exe));
+    }
 
     #[test]
     fn version_probe_times_out_instead_of_blocking_detection() {

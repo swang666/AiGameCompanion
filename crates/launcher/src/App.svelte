@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import TopBar from './lib/components/TopBar.svelte';
   import StatusBar from './lib/components/StatusBar.svelte';
   import GameList from './lib/components/GameList.svelte';
@@ -11,6 +12,7 @@
   import Overlay from './lib/components/Overlay.svelte';
   import { scanGames, getGames, loadGames } from './lib/stores/games.svelte';
   import { loadProvider } from './lib/stores/companion.svelte';
+  import { applyTextSize } from './lib/stores/text-size.svelte';
 
   // The overlay companion loads the same SPA in a second window; branch on label.
   const isOverlay = getCurrentWindow().label === 'overlay';
@@ -25,6 +27,25 @@
     } catch {
       void scanGames();
     }
+  });
+
+  onMount(() => {
+    const subscription = listen<string>('text-size-changed', (event) => {
+      void applyTextSize(event.payload).catch((error: unknown) => {
+        console.error('Could not apply text size:', error);
+      });
+    });
+    void subscription
+      .then(() => invoke<{ text_size?: string }>('get_settings'))
+      .then((settings) => applyTextSize(settings.text_size))
+      .catch((error: unknown) => {
+        console.error('Could not load text size:', error);
+      });
+    return () => {
+      void subscription.then((off) => {
+        off();
+      });
+    };
   });
 
   let games = $derived(getGames());

@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -25,6 +25,7 @@ pub(crate) fn update_settings(
         // Model choices are changed by their own command. A Settings dialog
         // opened earlier must not overwrite a newer choice from the overlay.
         settings.model_overrides = launcher.settings.model_overrides.clone();
+        settings.text_size = launcher.settings.text_size.clone();
         launcher.settings = settings;
     }
 
@@ -42,6 +43,23 @@ pub(crate) fn update_settings(
     }
 
     state.save()
+}
+
+/// Persist text size immediately so the overlay controls and Settings stay in sync.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn set_text_size(
+    size: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    if !matches!(size.as_str(), "small" | "normal" | "large" | "larger") {
+        return Err("Invalid text size.".to_owned());
+    }
+    state.launcher.lock().settings.text_size = size.clone();
+    state.save()?;
+    app.emit("text-size-changed", size)
+        .map_err(|e| format!("Could not update text size: {e}"))
 }
 
 /// Open an https URL in the default browser (Settings "Get a key" / docs links).

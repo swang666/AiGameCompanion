@@ -145,6 +145,7 @@ mod tests {
             name: "Test Game".to_owned(),
             ..Default::default()
         });
+        app.launcher.lock().settings.text_size = "large".to_owned();
         app.save().unwrap();
 
         let reloaded = AppState::load(path.clone());
@@ -152,6 +153,7 @@ mod tests {
         assert_eq!(st.games.len(), 1);
         assert_eq!(st.games[0].id, "g1");
         assert_eq!(st.games[0].name, "Test Game");
+        assert_eq!(st.settings.text_size, "large");
         drop(st);
         cleanup(&path);
     }
@@ -174,6 +176,7 @@ mod tests {
         assert!(!st.settings.scan_on_startup); // explicit value preserved
         assert!(!st.settings.launch_on_startup); // defaulted to false
         assert!(st.settings.minimize_to_tray); // defaulted to true
+        assert_eq!(st.settings.text_size, "normal"); // default for older state
         drop(st);
         cleanup(&path);
     }

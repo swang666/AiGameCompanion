@@ -13,6 +13,7 @@
     type GameTarget,
   } from '../utils/research';
   import type { Provider } from '../stores/companion.svelte';
+  import { getTextSize, stepTextSize } from '../stores/text-size.svelte';
 
   interface Availability {
     gemini: boolean;
@@ -85,6 +86,8 @@
   let microphones = $state<MediaDeviceInfo[]>([]);
   let microphone = $state('');
   let speechLanguage = $state('zh');
+  let textSize = $derived(getTextSize());
+  let textSizeSaving = $state(false);
   let input = $state<HTMLTextAreaElement | null>(null);
   let messageList = $state<HTMLElement | null>(null);
   let sequence = 0;
@@ -120,6 +123,18 @@
     if (!availability[provider])
       provider = providers.find((p) => availability[p.id])?.id ?? 'claude';
     if (provider === 'openai' && !availability.openai_images && attach) toggleCapture();
+  }
+
+  async function changeTextSize(direction: -1 | 1) {
+    if (textSizeSaving) return;
+    textSizeSaving = true;
+    try {
+      await invoke('set_text_size', { size: stepTextSize(textSize, direction) });
+    } catch (cause) {
+      error = `Could not change text size: ${String(cause)}`;
+    } finally {
+      textSizeSaving = false;
+    }
   }
   async function refresh() {
     const revision = ++availabilityRevision;
@@ -452,8 +467,26 @@
 <main class="overlay">
   <header data-tauri-drag-region>
     <div class="brand" data-tauri-drag-region>
-      <span class="spark">✦</span> SAGE <span class="subtitle">game companion</span>
+      <span class="spark">✦</span> SAGE <span class="subtitle" class:compact={textSize === 'larger'}
+        >game companion</span
+      >
     </div>
+    <button
+      class="size-button"
+      aria-label="Decrease text size"
+      disabled={textSizeSaving || textSize === 'small'}
+      onclick={() => void changeTextSize(-1)}
+      title="Smaller text"
+      type="button">A−</button
+    >
+    <button
+      class="size-button"
+      aria-label="Increase text size"
+      disabled={textSizeSaving || textSize === 'larger'}
+      onclick={() => void changeTextSize(1)}
+      title="Larger text"
+      type="button">A+</button
+    >
     <button
       class="icon"
       aria-label="New chat"
@@ -708,6 +741,14 @@
   .spark {
     color: #e4bf7c;
     margin-right: 7px;
+  }
+  .size-button {
+    padding: 3px 5px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .subtitle.compact {
+    display: none;
   }
   .subtitle {
     color: #8c929f;

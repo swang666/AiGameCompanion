@@ -15,6 +15,8 @@ The **Speech language** control defaults to Chinese (中文) for this setup. Cho
 
 The **Model** field in the overlay lets you choose a model ID or alias for the current provider. Choices are saved separately for Claude, Codex, and Gemini. Leave the field blank to use Claude Sonnet, the Codex CLI default, or the Gemini model in `config.toml`, respectively. Claude offers `sonnet`, `opus`, and `haiku` suggestions; other model IDs can be typed directly. Changes apply to the next question.
 
+Choose **Text size** under **Settings → Launcher**: Small, Normal, Large, or Larger. The **A−** and **A+** buttons in the overlay change it without leaving the game. The choice is saved and applies to both Sage windows.
+
 The overlay remembers a separate chat for each game executable while the app stays open. You can edit the detected game title. The **Hints first** option keeps answers brief and reduces spoilers. Uncheck **Screenshot** to ask using text alone. A failed capture blocks a screenshot request until you Retake or choose text only.
 
 Claude is restricted to WebSearch/WebFetch and Codex to live search with file/shell tools disabled for this session. Gemini remains available when configured but currently answers without live web research. Search activity appears in the response status; answers only include links the model supplied, so check a linked guide if precision matters.

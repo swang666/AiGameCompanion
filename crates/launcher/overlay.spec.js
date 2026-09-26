@@ -8,18 +8,23 @@ test('switching games keeps their chats separate and renders safe source links',
     const listeners = new Map();
     const sent = [];
     const savedModels = [];
+    const zoomValues = [];
     let nextCallback = 1;
     let nextCapture = 1;
     window.__fake = {
       sent,
       savedModels,
+      zoomValues,
       listeners,
       emit(event, payload) {
         callbacks.get(listeners.get(event))?.({ event, payload, id: 1 });
       },
     };
     window.__TAURI_INTERNALS__ = {
-      metadata: { currentWindow: { label: 'overlay' } },
+      metadata: {
+        currentWindow: { label: 'overlay' },
+        currentWebview: { label: 'overlay' },
+      },
       transformCallback(callback) {
         const id = nextCallback++;
         callbacks.set(id, callback);
@@ -36,8 +41,17 @@ test('switching games keeps their chats separate and renders safe source links',
         if (command === 'get_settings')
           return {
             active_provider: 'claude',
+            text_size: 'normal',
             model_overrides: { claude: 'haiku', openai: 'gpt-6-sol' },
           };
+        if (command === 'plugin:webview|set_webview_zoom') {
+          zoomValues.push(args.value);
+          return null;
+        }
+        if (command === 'set_text_size') {
+          window.__fake.emit('text-size-changed', args.size);
+          return null;
+        }
         if (command === 'set_model_override') {
           savedModels.push(args);
           return null;
@@ -160,6 +174,12 @@ test('switching games keeps their chats separate and renders safe source links',
   expect(await page.evaluate(() => window.__fake.language)).toBe('zh');
   await page.getByRole('combobox', { name: 'Speech language' }).selectOption('en');
   expect(await page.evaluate(() => localStorage.getItem('sage-speech-language'))).toBe('en');
+
+  await page.getByRole('button', { name: 'Increase text size' }).click();
+  await expect.poll(() => page.evaluate(() => window.__fake.zoomValues.at(-1))).toBe(1.15);
+  await page.getByRole('button', { name: 'Increase text size' }).click();
+  await expect.poll(() => page.evaluate(() => window.__fake.zoomValues.at(-1))).toBe(1.3);
+  await expect(page.locator('.subtitle')).toBeHidden();
 });
 
 test('overlay updates when startup CLI detection finishes', async ({ page }) => {
@@ -184,7 +204,10 @@ test('overlay updates when startup CLI detection finishes', async ({ page }) => 
       },
     };
     window.__TAURI_INTERNALS__ = {
-      metadata: { currentWindow: { label: 'overlay' } },
+      metadata: {
+        currentWindow: { label: 'overlay' },
+        currentWebview: { label: 'overlay' },
+      },
       transformCallback(callback) {
         const id = nextCallback++;
         callbacks.set(id, callback);
@@ -199,6 +222,7 @@ test('overlay updates when startup CLI detection finishes', async ({ page }) => 
           return nextCallback++;
         }
         if (command === 'get_settings') return { active_provider: 'claude' };
+        if (command === 'plugin:webview|set_webview_zoom') return null;
         if (command === 'available_providers')
           return {
             claude: detected,

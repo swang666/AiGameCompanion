@@ -1,11 +1,13 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { PROVIDERS, getProvider, setProvider, type Provider } from '../stores/companion.svelte';
+  import { TEXT_SIZES, getTextSize, type TextSize } from '../stores/text-size.svelte';
 
   interface Availability {
     gemini: boolean;
     claude: boolean;
     openai: boolean;
+    openai_images: boolean;
     claude_where: string;
     openai_where: string;
   }
@@ -31,14 +33,17 @@
     gemini: false,
     claude: false,
     openai: false,
+    openai_images: false,
     claude_where: '',
     openai_where: '',
   });
   let provider = $derived(getProvider());
+  let textSize = $derived(getTextSize());
   let geminiKey = $state('');
   let revealKey = $state(false);
   let keySaving = $state(false);
   let rechecking = $state(false);
+  let textSizeSaving = $state(false);
   let saving = $state(false);
   let saveError = $state<string | null>(null);
 
@@ -111,6 +116,19 @@
       saveError = String(e);
     } finally {
       rechecking = false;
+    }
+  }
+
+  async function chooseTextSize(size: TextSize) {
+    if (textSizeSaving || size === textSize) return;
+    textSizeSaving = true;
+    saveError = null;
+    try {
+      await invoke('set_text_size', { size });
+    } catch (error) {
+      saveError = String(error);
+    } finally {
+      textSizeSaving = false;
     }
   }
 
@@ -407,7 +425,7 @@
                 <div class="font-mono text-[10.5px] text-t-lo">
                   {PROVIDERS.openai.model} · CLI{availability.openai_where
                     ? ` · ${availability.openai_where}`
-                    : ''} · no screenshots
+                    : ''}{availability.openai_images ? ' · screenshots' : ' · no screenshots'}
                 </div>
               </div>
               <span class="ml-auto pill {availability.openai ? 'ok' : 'off'}"
@@ -418,7 +436,7 @@
             <!-- CLI detail + recheck -->
             <div class="flex items-center justify-between mb-5">
               <span class="font-mono text-[9.5px] text-t-lo max-w-[60%]"
-                >CLIs detected on PATH, then inside WSL.</span
+                >CLIs detected on PATH, via Codex Desktop, or inside WSL.</span
               >
               <button
                 style="background: var(--color-ink-2);"
@@ -520,6 +538,26 @@
           {:else if section === 'launcher'}
             <h2 class="font-display text-[16px] font-semibold text-t-hi mb-1">Launcher</h2>
             <p class="text-[12.5px] text-t-mid mb-5">How Sage behaves on your desktop.</p>
+            <div class="mb-5">
+              <div class="text-[13.5px] font-semibold text-t-hi">Text size</div>
+              <p class="text-[12px] text-t-mid mt-1 mb-3">
+                Changes text and controls in the launcher and game overlay. Saved immediately.
+              </p>
+              <div class="flex flex-wrap gap-[7px]" aria-label="Text size">
+                {#each TEXT_SIZES as option (option.id)}<button
+                    style="border-color: {textSize === option.id
+                      ? 'var(--accent)'
+                      : 'var(--color-line)'}; background: {textSize === option.id
+                      ? 'color-mix(in oklab, var(--accent) 16%, transparent)'
+                      : 'var(--color-ink-2)'}; color: var(--color-t-hi);"
+                    class="px-3 py-2 rounded-[9px] border text-[12.5px] cursor-pointer disabled:opacity-60"
+                    aria-pressed={textSize === option.id}
+                    disabled={textSizeSaving}
+                    onclick={() => void chooseTextSize(option.id)}
+                    type="button">{option.label}</button
+                  >{/each}
+              </div>
+            </div>
             {#each TOGGLES as t (t.key)}
               {const on = $derived(settings[t.key] as boolean)}
               <div class="flex items-center py-[15px] border-b border-line-2">

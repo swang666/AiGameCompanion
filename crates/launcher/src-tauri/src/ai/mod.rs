@@ -188,7 +188,11 @@ impl AiState {
             openai: cli.codex.is_available(),
             openai_images: cli.codex == cli::CliMode::Native,
             claude_where: cli.claude.location().to_owned(),
-            openai_where: cli.codex.location().to_owned(),
+            openai_where: if cli.codex == cli::CliMode::Native && cli.codex_executable != "codex" {
+                "Codex Desktop".to_owned()
+            } else {
+                cli.codex.location().to_owned()
+            },
         }
     }
 
