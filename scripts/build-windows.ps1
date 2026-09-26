@@ -17,7 +17,7 @@ try {
     $output = Join-Path $root 'out\Sage'
     New-Item -ItemType Directory -Force -Path $output | Out-Null
     Copy-Item -LiteralPath (Join-Path $root 'target\release\launcher.exe') -Destination (Join-Path $output 'Sage.exe') -Force
-    Copy-Item -LiteralPath (Join-Path $root 'LICENSE'),(Join-Path $root 'README-FORK.md') -Destination $output -Force
+    Copy-Item -LiteralPath (Join-Path $root 'LICENSE'),(Join-Path $root 'README-FORK.md'),(Join-Path $root 'SETUP-WITH-AI.md'),(Join-Path $root 'config.example.toml') -Destination $output -Force
     if ($WithVoice) { & (Join-Path $PSScriptRoot 'setup-voice.ps1') -Destination (Join-Path $output 'voice') }
     Write-Output "Built: $output\Sage.exe"
 } finally { Pop-Location }

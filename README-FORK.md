@@ -1,32 +1,89 @@
-# Sage: voice and web research over your game
+# Sage: Windows setup and use
 
-This is a local extension of [AI Game Companion](https://github.com/Wintersta7e/AiGameCompanion), built from its MIT-licensed source. It works with a game in windowed or borderless mode and the installed **Claude Code** or **Codex** client. Both clients use their existing login and online model. The microphone is transcribed locally with whisper.cpp. Game screenshots and questions go to the selected model when you press Send.
+Sage is a fork of [AI Game Companion by Wintersta7e](https://github.com/Wintersta7e/AiGameCompanion). It adds local voice transcription, live research through your signed-in Claude Code or Codex CLI, screenshot preview, per-game conversations, model selection, and adjustable text size. The original author's [MIT license](LICENSE) remains in this repository and beside the built executable.
 
-## Start playing
+This guide is for a clean **Windows 10/11 x64** machine. If you want an AI coding assistant to perform the setup, give it the prompt in [SETUP-WITH-AI.md](SETUP-WITH-AI.md).
 
-1. Install and sign in to [Claude Code](https://code.claude.com/docs/en/setup) or [Codex](https://learn.chatgpt.com/docs/installing-codex) if you have not already. On this machine, both clients are installed. Their account access still has to be confirmed with a real query.
-2. Run `scripts/build-windows.ps1 -WithVoice` in PowerShell. It builds `out/Sage/Sage.exe` with the voice runtime beside it. The voice runtime can also be installed just for this PC with `scripts/setup-voice.ps1`.
-3. Start `out/Sage/Sage.exe`. Bring your game to the foreground, then press **Ctrl+Shift+G**. The overlay opens and captures a frame. Check the preview; use Retake if the scene has changed.
-4. Click **Speak**, ask your question, click **Finish speaking**, correct the transcript if needed, and press **Send**. The answer shows links you can open in your browser. **Esc** closes the overlay and returns focus to the game.
+## 1. Install build prerequisites
 
-**Ctrl+Shift+V** opens the overlay and starts or stops speaking. **Ctrl+Shift+A** asks for a hint. **Ctrl+Shift+T** asks for a translation. If local voice is unavailable, focus the question box and use Windows **Win+H** dictation.
+Install these from their official sites, then open a **new PowerShell window** so updated PATH entries are visible:
 
-The **Speech language** control defaults to Chinese (中文) for this setup. Choose English, another listed language, or Auto-detect before recording when you switch languages. The choice is remembered on this PC. The multilingual Whisper model transcribes speech in its original language; it does not translate your question.
+| Prerequisite | What to install |
+| --- | --- |
+| [Git for Windows](https://git-scm.com/download/win) | Needed to clone the repository. |
+| [Node.js](https://nodejs.org/en/download) | Node 22.13+ or 24+ with npm. |
+| [Rust](https://rustup.rs/) | Stable Rust with the default `x86_64-pc-windows-msvc` toolchain. Use the standard rustup location under your user profile; the build script looks for `%USERPROFILE%\.cargo\bin\cargo.exe`. |
+| [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) | Select **Desktop development with C++**, including the MSVC x64/x86 build tools and Windows SDK. A full Visual Studio installation with that workload also works. |
+| [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section) | Needed to run the Tauri windows. It may already be installed; install the Evergreen Runtime if Sage fails to open. |
 
-The **Model** field in the overlay lets you choose a model ID or alias for the current provider. Choices are saved separately for Claude, Codex, and Gemini. Leave the field blank to use Claude Sonnet, the Codex CLI default, or the Gemini model in `config.toml`, respectively. Claude offers `sonnet`, `opus`, and `haiku` suggestions; other model IDs can be typed directly. Changes apply to the next question.
+Check the command-line tools in PowerShell:
 
-Choose **Text size** under **Settings → Launcher**: Small, Normal, Large, or Larger. The **A−** and **A+** buttons in the overlay change it without leaving the game. The choice is saved and applies to both Sage windows.
+```powershell
+git --version
+node --version
+npm --version
+& "$env:USERPROFILE\.cargo\bin\cargo.exe" --version
+```
 
-The overlay remembers a separate chat for each game executable while the app stays open. You can edit the detected game title. The **Hints first** option keeps answers brief and reduces spoilers. Uncheck **Screenshot** to ask using text alone. A failed capture blocks a screenshot request until you Retake or choose text only.
+## 2. Choose an AI provider
 
-Claude is restricted to WebSearch/WebFetch and Codex to live search with file/shell tools disabled for this session. Gemini remains available when configured but currently answers without live web research. Search activity appears in the response status; answers only include links the model supplied, so check a linked guide if precision matters.
+Set up **at least one** provider. Claude Code and Codex reuse their own sign-in; Sage does not need their API keys.
 
-## Build prerequisites
+- **Claude:** Install [Claude Code](https://code.claude.com/docs/en/setup), run `claude` in a terminal, and complete its sign-in. Check `claude --version` in a new PowerShell window.
+- **Codex:** Install the [Codex CLI](https://developers.openai.com/codex/cli), run `codex` in a terminal, and complete its sign-in. Check `codex --version`. Sage can also detect a Codex Desktop installation. A WSL Codex CLI is supported, but native Windows Codex is the route for screenshot questions.
+- **Gemini:** Get a key from [Google AI Studio](https://aistudio.google.com/apikey), then enter it in **Sage → Settings → Providers**. Sage stores it in Windows Credential Manager. Gemini works for questions and screenshots, but this fork does not provide live web research through Gemini.
 
-Windows 10/11, WebView2, Node.js 22.13+ (or 24+), Rust stable, and Visual Studio C++ Build Tools are needed. The build script runs `npm ci`, builds the Svelte frontend, and builds a portable Rust executable. It keeps the upstream MIT notice. On this PC, Rust and Visual Studio C++ Build Tools were installed during implementation; the voice model is already installed in the app data folder.
+The provider choices are enabled when Sage detects an installed CLI or a Gemini key. The CLI must also be signed in before it can answer. After installing or signing in to a CLI, press **Settings → Providers → Re-check CLIs**; restart Sage if the CLI was just added to PATH. `config.toml` is **not required**. The old [config.example.toml](config.example.toml) format is an optional plaintext fallback for Gemini, and should not be used unless you specifically need it.
 
-The `-WithVoice` build downloads a pinned whisper.cpp v1.8.3 x64 runtime and multilingual base model, checks their SHA-256 hashes, and copies them beside Sage. The standalone voice setup installs the same files under `%APPDATA%\com.aigamecompanion.launcher\voice`. The model is approximately 148 MB. Audio is captured only while recording and a temporary WAV is deleted after transcription. The app does not automatically listen to game audio.
+## 3. Clone and build
 
-For development, run `npm ci` in `crates/launcher`, then `npm run tauri dev`. Run `npm run check`, `npm run lint`, `npm test`, `npm run test:ui`, and `cargo test --workspace --all-features --locked` before changing the app. The upstream README has additional Windows capture and display-mode notes.
+On this fork's GitHub page, select **Code → HTTPS** and copy the clone URL. In PowerShell:
 
-Google AI Mode's consumer UI is not integrated. Its separate desktop app remains an option, while this overlay provides the native Claude/Codex path.
+```powershell
+git clone https://github.com/swang666/AiGameCompanion.git
+cd AiGameCompanion
+git switch feature/universal-voice-search
+& .\scripts\build-windows.ps1 -WithVoice
+```
+
+The build installs the locked frontend dependencies, builds the Rust app, and creates `out\Sage\Sage.exe`. The `-WithVoice` option downloads a pinned whisper.cpp Windows runtime and multilingual base model, checks their SHA-256 hashes, and places them in `out\Sage\voice`. This needs internet access for dependencies and the voice files; the model alone is about 148 MB. The first Rust build can take a while. Close Sage before rebuilding so Windows does not lock `Sage.exe`.
+
+If your PowerShell policy blocks local scripts, run the build in a one-time process with:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1 -WithVoice
+```
+
+To build without bundling voice, omit `-WithVoice`. You can add local voice later with `& .\scripts\setup-voice.ps1`; that installs it under `%APPDATA%\com.aigamecompanion.launcher\voice` for this PC. To carry Sage to another PC, use the `-WithVoice` build and copy the **whole** `out\Sage` directory, including `voice` and `LICENSE`.
+
+## 4. Run and test
+
+```powershell
+& .\out\Sage\Sage.exe
+```
+
+Open **Settings → Providers** and confirm your provider is detected. Start a game in windowed or borderless fullscreen mode, focus it, then press **Ctrl+Shift+G**. Confirm that Sage shows the right game title and screenshot preview, type a question, and press **Enter** or click **Send**. You can uncheck **Screenshot** to ask using text alone; use **Retake** when the scene changes.
+
+| Action | Shortcut |
+| --- | --- |
+| Toggle Sage and capture the game | **Ctrl+Shift+G** |
+| Start or stop recording | **Ctrl+Shift+V** |
+| Ask for a hint | **Ctrl+Shift+A** |
+| Translate the current screen | **Ctrl+Shift+T** |
+| Send a typed or transcribed question | **Enter** in the question box |
+| Close Sage and return to the game | **Esc** |
+
+For voice, choose **Speech language** before recording. It defaults to **Chinese (中文)** in this fork; use English or Auto-detect when appropriate. Speak after pressing **Ctrl+Shift+V**, press it again to stop, correct the transcript if needed, then press **Enter**. Whisper runs locally and transcribes in the selected language. It has no separate API fee. If local voice is not installed, Windows **Win+H** dictation also works in the question box.
+
+The **Model** field accepts a model ID or provider alias for the selected provider; leave it blank for that provider's default. The choice is saved separately for Claude, Codex, and Gemini and takes effect on the next question. **Hints first** asks for brief, lower-spoiler help. Change **Text size** in **Settings → Launcher**, or use **A− / A+** in the overlay. Chats are kept separately for each detected game executable while Sage is running.
+
+## Troubleshooting
+
+- **“No assistant detected,” or Claude/Codex is greyed out:** First verify the CLI runs and is signed in from a new PowerShell window (`claude --version` or `codex --version`), then choose **Re-check CLIs** in Sage. Restart Sage after changing PATH. Codex Desktop and WSL may also be detected, but a native CLI gives the most direct screenshot support.
+- **`config.toml not found`:** That was an older setup path. Build and run this branch, then enter a Gemini key in **Settings → Providers** if using Gemini. Claude and Codex need no `config.toml`.
+- **Chinese speech appears in another language:** Choose **Chinese (中文)** rather than Auto-detect before recording. Check the transcript before sending.
+- **Voice is unavailable:** Build with `-WithVoice` or run `scripts\setup-voice.ps1`; keep the `voice` folder beside `Sage.exe` for a portable build. Windows microphone access must be allowed for desktop apps.
+- **Overlay or screenshot is missing/black:** Use windowed or borderless fullscreen mode. An external overlay cannot display over true exclusive fullscreen, and protected or minimized game windows may resist capture.
+- **Build fails at Rust linking:** Confirm the Visual Studio **Desktop development with C++** workload and Windows SDK are installed, then open a fresh PowerShell window. If copying `Sage.exe` fails, close the running app first.
+
+The original project's longer description remains in the repository's `README.md` below the fork notice. It describes upstream behavior at the fork point; use this guide for the current Windows build.

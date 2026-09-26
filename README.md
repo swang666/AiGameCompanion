@@ -1,8 +1,12 @@
-> **Local Sage fork:** This working tree adds voice input, web search through
-> installed Claude/Codex clients, captured-frame previews, and separate chats for
-> each game. Use [README-FORK.md](README-FORK.md) for current build and play
-> instructions. The original project description below is retained for
-> attribution and upstream context.
+## Sage fork
+
+This fork builds on **[AI Game Companion by Wintersta7e](https://github.com/Wintersta7e/AiGameCompanion)**. It adds voice input, live research through signed-in Claude Code or Codex clients, screenshot previews, per-game conversations, model selection, and adjustable text size. Wintersta7e's original [MIT copyright and license](LICENSE) are preserved.
+
+**[Manual Windows setup and controls](README-FORK.md)** · **[Copy-paste prompt for an AI setup assistant](SETUP-WITH-AI.md)**
+
+The original author's README is retained below for credit and upstream context. It reflects upstream behavior at the fork point; follow the Sage guide above for the current build and provider setup.
+
+---
 
 <div align="center">
 
