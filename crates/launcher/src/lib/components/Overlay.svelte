@@ -109,6 +109,7 @@
   let capturing = $state(false);
   let captureError = $state('');
   let error = $state('');
+  let activeVideo = $state('');
   let asking = $state(false);
   let voicePhase = $state<'idle' | 'starting' | 'recording' | 'transcribing'>('idle');
   let voiceReady = $state(false);
@@ -122,7 +123,7 @@
   let messageList = $state<HTMLElement | null>(null);
   let sequence = 0;
   let activeRequest = 0;
-  let conversation = 1;
+  let conversation = $state(1);
   let captureSequence = 0;
   let voiceSequence = 0;
   let activeVoice = 0;
@@ -227,6 +228,7 @@
       });
   }
   function newChat() {
+    activeVideo = '';
     stop();
     cancelVoice();
     conversation++;
@@ -236,6 +238,7 @@
   }
   function useGame(next: GameTarget | null) {
     if (gameKey(next) !== gameKey(game) || next?.pid !== game?.pid) {
+      activeVideo = '';
       stop();
       cancelVoice();
       conversation++;
@@ -429,6 +432,7 @@
     else cancelVoice();
   }
   async function hide() {
+    activeVideo = '';
     await saveModel(provider);
     cancelVoice();
     try {
@@ -480,7 +484,10 @@
         availabilityRevision++;
         applyAvailability(event.payload);
       }),
-      listen('overlay-hidden', cancelVoice),
+      listen('overlay-hidden', () => {
+        activeVideo = '';
+        cancelVoice();
+      }),
       listen('voice-request', toggleVoice),
       listen('quick-ask', () => {
         void quickAsk('Give me a small hint about what to do next here.');
@@ -652,7 +659,15 @@
               >frame {message.screenshot}</span
             >{/if}
         </div>
-        <Answer text={message.content} />
+        <Answer
+          {activeVideo}
+          onvideo={(key: string) => {
+            activeVideo = key;
+          }}
+          showVideos={message.role === 'assistant' && Boolean(message.complete)}
+          text={message.content}
+          videoKey="{conversation}:{i}"
+        />
         {#if message.status}<div
             class="status"
             class:pulse={asking && i === session.messages.length - 1}

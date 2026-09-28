@@ -1,9 +1,26 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { answerParts } from '../utils/research';
-  let { text }: { text: string } = $props();
+  import { answerVideos } from '../utils/video';
+  import VideoCard from './VideoCard.svelte';
+  let {
+    text,
+    showVideos = false,
+    videoKey = '',
+    activeVideo = '',
+    onvideo = () => {
+      /* Text-only callers do not play videos. */
+    },
+  }: {
+    text: string;
+    showVideos?: boolean;
+    videoKey?: string;
+    activeVideo?: string;
+    onvideo?: (key: string) => void;
+  } = $props();
   let error = $state('');
   const parts = $derived(answerParts(text));
+  const videos = $derived(showVideos ? answerVideos(text) : []);
   async function open(url: string) {
     try {
       await invoke('open_url', { url });
@@ -21,6 +38,19 @@
       >{:else}{part.text}{/if}{/each}
   {#if error}<p role="alert">{error}</p>{/if}
 </div>
+
+{#each videos as video (video.id)}
+  <VideoCard
+    active={activeVideo === `${videoKey}:${video.id}`}
+    onplay={() => {
+      onvideo(`${videoKey}:${video.id}`);
+    }}
+    onstop={() => {
+      onvideo('');
+    }}
+    {video}
+  />
+{/each}
 
 <style>
   .answer {

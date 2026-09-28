@@ -1,8 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('switching games keeps their chats separate and renders safe source links', async ({
-  page,
-}) => {
+async function setupOverlay(page) {
   await page.addInitScript(() => {
     const callbacks = new Map();
     const listeners = new Map();
@@ -90,17 +88,22 @@ test('switching games keeps their chats separate and renders safe source links',
                 kind: 'chunk',
                 requestId: args.request.requestId,
                 conversationId: args.request.conversationId,
-                text: 'See [Steam](https://store.steampowered.com/app/251290/). <script>bad()</script>',
+                text:
+                  window.__fake.answer ??
+                  'See [Steam](https://store.steampowered.com/app/251290/). <script>bad()</script>',
               },
             });
-            callback({
-              index: 2,
-              message: {
-                kind: 'done',
-                requestId: args.request.requestId,
-                conversationId: args.request.conversationId,
-              },
-            });
+            const finish = () =>
+              callback({
+                index: 2,
+                message: {
+                  kind: 'done',
+                  requestId: args.request.requestId,
+                  conversationId: args.request.conversationId,
+                },
+              });
+            if (window.__fake.holdAnswer) window.__fake.finishAnswer = finish;
+            else finish();
           });
           return null;
         }
@@ -112,6 +115,12 @@ test('switching games keeps their chats separate and renders safe source links',
   await expect
     .poll(() => page.evaluate(() => window.__fake.listeners.has('overlay-status')))
     .toBe(true);
+}
+
+test('switching games keeps their chats separate and renders safe source links', async ({
+  page,
+}) => {
+  await setupOverlay(page);
   await page.evaluate(() =>
     window.__fake.emit('overlay-status', {
       hwnd: 10,
@@ -210,6 +219,56 @@ test('switching games keeps their chats separate and renders safe source links',
   await page.getByRole('button', { name: 'Increase text size' }).click();
   await expect.poll(() => page.evaluate(() => window.__fake.zoomValues.at(-1))).toBe(1.3);
   await expect(page.locator('.subtitle')).toBeHidden();
+});
+
+test('automatically embeds completed video links and stops playback at conversation boundaries', async ({
+  page,
+}) => {
+  await page.route('https://www.youtube.com/embed/**', (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: '<html><body>Test video player</body></html>',
+    }),
+  );
+  await setupOverlay(page);
+  await page.evaluate(() => {
+    window.__fake.answer =
+      'Head north. [Puzzle guide](https://youtu.be/M7lc1UVf-VE?t=83) [Same video](https://youtube.com/watch?v=M7lc1UVf-VE) [Alternative route](https://youtu.be/abcdefghijk) [Extra](https://youtu.be/12345678901)';
+    window.__fake.holdAnswer = true;
+    window.__fake.emit('overlay-status', { hwnd: 10, pid: 20, exe: 'A.exe', title: 'Game A' });
+  });
+  await expect(page.getByAltText('Game frame that will be sent with your question')).toBeVisible();
+  await page.getByRole('textbox', { name: 'Your question' }).fill('Where do I go?');
+  await page.getByRole('button', { name: 'Send ↑' }).click();
+  await expect(page.getByRole('button', { name: 'Puzzle guide', exact: true })).toBeVisible();
+  await expect(page.locator('.video-card')).toHaveCount(0);
+  await page.evaluate(() => window.__fake.finishAnswer());
+  await expect(page.locator('.video-card')).toHaveCount(2);
+  await expect(page.locator('iframe')).toHaveCount(0);
+  await expect(page.getByText('YouTube · from 1:23', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '▶ Play in chat' }).first().click();
+  await expect(page.locator('iframe')).toHaveCount(1);
+  await expect(page.locator('iframe')).toHaveAttribute('src', /\/embed\/M7lc1UVf-VE\?.*start=83/);
+  await page.getByRole('button', { name: '▶ Play in chat' }).click();
+  await expect(page.locator('iframe')).toHaveCount(1);
+  await expect(page.locator('iframe')).toHaveAttribute('src', /\/embed\/abcdefghijk/);
+  await page.evaluate(() => window.__fake.emit('overlay-hidden', null));
+  await expect(page.locator('iframe')).toHaveCount(0);
+  await page.getByRole('button', { name: '▶ Play in chat' }).first().click();
+  await page.screenshot({ path: 'test-results/video-card.png' });
+  await page.evaluate(() =>
+    window.__fake.emit('overlay-status', { hwnd: 11, pid: 21, exe: 'B.exe', title: 'Game B' }),
+  );
+  await expect(page.locator('iframe')).toHaveCount(0);
+  await page.evaluate(() =>
+    window.__fake.emit('overlay-status', { hwnd: 10, pid: 20, exe: 'A.exe', title: 'Game A' }),
+  );
+  await expect(page.locator('.video-card')).toHaveCount(2);
+  await expect(page.locator('iframe')).toHaveCount(0);
+  await page.getByRole('button', { name: '▶ Play in chat' }).first().click();
+  await page.getByRole('button', { name: 'New chat' }).click();
+  await expect(page.locator('iframe')).toHaveCount(0);
+  await expect(page.locator('.video-card')).toHaveCount(0);
 });
 
 test('overlay updates when startup CLI detection finishes', async ({ page }) => {

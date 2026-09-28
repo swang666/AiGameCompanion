@@ -1,6 +1,6 @@
 ## Sage fork
 
-This fork builds on **[AI Game Companion by Wintersta7e](https://github.com/Wintersta7e/AiGameCompanion)**. It adds voice input, live research through signed-in Claude Code or Codex clients, screenshot previews, per-game conversations, model selection, and adjustable text size. Wintersta7e's original [MIT copyright and license](LICENSE) are preserved.
+This fork builds on **[AI Game Companion by Wintersta7e](https://github.com/Wintersta7e/AiGameCompanion)**. It adds voice input, live research through signed-in Claude Code or Codex clients, automatic related YouTube videos in chat, screenshot previews, per-game conversations, model selection, and adjustable text size. Wintersta7e's original [MIT copyright and license](LICENSE) are preserved.
 
 **[Manual Windows setup and controls](README-FORK.md)** · **[Copy-paste prompt for an AI setup assistant](SETUP-WITH-AI.md)**
 

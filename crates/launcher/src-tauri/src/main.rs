@@ -11,6 +11,7 @@ mod process_watch;
 mod secrets;
 mod state;
 mod util;
+mod video;
 mod voice;
 
 use ai::AiState;
@@ -115,6 +116,9 @@ fn main() {
             }
 
             let state_path = app_dir.join("launcher-state.json");
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                video::install(&overlay);
+            }
             let app_state = AppState::load(state_path);
 
             // Apply launch_on_startup from saved settings
@@ -191,7 +195,7 @@ fn main() {
                 // launcher's tray / exit behaviour.
                 if window.label() == "overlay" {
                     api.prevent_close();
-                    util::log_if_err("hide overlay window", window.hide());
+                    overlay::hide_overlay(window.app_handle().clone());
                     return;
                 }
                 let state = window.state::<AppState>();

@@ -44,6 +44,9 @@ tempfile = "3"
 # Win32 foreground-window detection + focus handoff (overlay companion). Only
 # compiled for Windows targets; the launcher's pure-logic tests run on Linux.
 [target.'cfg(windows)'.dependencies]
+# Match Tauri/Wry's WebView2 bindings for the embedded player's app identity.
+webview2-com = "0.38.2"
+webview-windows-core = { package = "windows-core", version = "0.61" }
 # OS secret storage (Credential Manager) for the Gemini API key. Windows-only so
 # the Linux test build does not pull the secret-service (dbus) backend.
 # Deliberately held at 3.x. Upstream turned 4.x into a sample CLI app and states

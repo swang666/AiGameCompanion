@@ -58,6 +58,16 @@ To build without bundling voice, omit `-WithVoice`. You can add local voice late
 
 ## 4. Run and test
 
+### Automatic walkthrough videos
+
+For gameplay questions, Sage instructs Claude Code and Codex to search for relevant YouTube videos alongside written sources, using your question, game edition, screenshot, and current progress. You do not need to ask for a video. It prefers your language and asks the assistant to respect hints-first and avoid later spoilers. Video selection depends on the search results; if nothing suitable is found, the answer can contain no video.
+
+Completed answers automatically show up to two distinct YouTube video cards. Click **Play in chat** to load a player; cards do not load YouTube content or start audio until clicked. Source-provided timestamps are preserved. You can resize the overlay or use the player's full-screen control. Starting another video closes the first. Closing the overlay (including **Ctrl+Shift+G**), changing games, or starting a new chat stops playback. When focus is inside the player, use the global **Ctrl+Shift+G** shortcut to return to your game.
+
+Use **Open in browser** if a video is private, region/age restricted, or disallows embedding, or if the embedded player cannot load. Internet access is required; YouTube may show ads. Sage uses the official player and does not download videos. Other websites remain clickable source links. Gemini currently has no live search integration, so it cannot automatically discover current video results. Embedding a video does not mean the assistant watched or verified its entire contents.
+
+The Windows build identifies Sage to YouTube through a narrowly scoped WebView2 request header. Embedded pages are not granted native app permissions. No YouTube API key or extra setup is needed for playback of returned links.
+
 ### Optional: stronger voice recognition with an NVIDIA GPU
 
 For an NVIDIA GPU with sufficient free VRAM and a current driver, install Whisper **large-v3-turbo** with the CUDA runtime:
